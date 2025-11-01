@@ -1,3 +1,6 @@
+pip install --force-reinstall --no-deps D:\offline_bundle\wheel\llama_cpp_python-0.3.2-cp310-cp310-win_amd64.whl
+
+
 ./llama-cli -hf google/gemma-3-4b-it-qat-q4_0-gguf \
   -p "Answer strictly from CONTEXT. If not found, say 'NOT FOUND IN CONTEXT'.\n\nCONTEXT:\n{{top3_docs}}\n\nQ: {{question}}\nA:" \
   -n 320 -c 4096 --temp 0.1 --top-p 0.9 -t 8
