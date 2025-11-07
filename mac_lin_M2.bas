@@ -5,16 +5,16 @@ Sub Build_QA_Sample_Set()
     '========================================================
     ' Macro 2: Build QA sample set using randomization
     '
-    ' 1) Clear data rows (only contents) of QA_Sam table.
-    ' 2) In tickler_count, set [Sample Set Count] =
-    '       ROUNDUP([% of Total] * Sample_Size_D2, 0)
-    ' 3) Use Keys!col_key (QA_Sam_col -> Src_tbl_col) mappings
-    '    to know which Src_tbl columns populate which QA_Sam cols.
-    ' 4) For each Tickler Type:
-    '       Randomly select N rows from Src_tbl where
-    '       N = Sample Set Count for that Tickler Type
-    '       (no replacement within that tickler type),
-    '       and write mapped fields into QA_Sam.
+    ' 1) Clear QA_Sam table data (only contents, keep structure/validations).
+    ' 2) In tickler_count:
+    '       Sample Set Count = ROUNDUP([% of Total] * D2, 0)
+    ' 3) Use Keys!col_key / col_keys:
+    '       QA_Sam_col -> Src_tbl_col mappings.
+    ' 4) For each Tickler Type with Sample Set Count > 0:
+    '       Randomly pick that many rows from Src_tbl and
+    '       append to QA_Sam (ListRows.Add).
+    ' 5) After filling, delete any completely blank rows
+    '       from QA_Sam so data starts at the top.
     '========================================================
 
     Dim wb As Workbook
@@ -27,21 +27,19 @@ Sub Build_QA_Sample_Set()
     Dim tblQA As ListObject
     Dim tblMap As ListObject
     
-    Dim bodyRangeQA As Range
     Dim bodyRangeCount As Range
     Dim mapBody As Range
     
     Dim sampleSize As Long
     Dim colPct As Long
     Dim colSample As Long
-    Dim colTicklerCount As Long
+    Dim colTicklerType As Long
     Dim srcTicklerCol As Long
     
     Dim mapQAColIdx As Long
     Dim mapSrcColIdx As Long
     
     Dim i As Long, r As Long, k As Long
-    Dim lastRow As Long
     Dim tt As String
     Dim pct As Double
     Dim needed As Long
@@ -52,14 +50,14 @@ Sub Build_QA_Sample_Set()
     
     Dim matchRows() As Long
     Dim matchCount As Long
-    Dim idx As Long, swapIdx As Long, tmp As Long
+    Dim swapIdx As Long, tmp As Long
     
     Dim newRow As ListRow
-    Dim dictSamples As Object ' not strictly required but reserved
-    Dim uniqueNeeded As Long
-    Dim maxQARows As Long
-    Dim currentQARows As Long
+    Dim totalSampled As Long
     
+    Dim qaHeader As String
+    Dim srcHeader As String
+
     On Error GoTo ErrHandler
     
     Set wb = ThisWorkbook
@@ -71,7 +69,7 @@ Sub Build_QA_Sample_Set()
     Set tblCount = wsQA.ListObjects("tickler_count")
     Set tblQA = wsQA.ListObjects("QA_Sam")
     
-    ' Try col_key first, fallback to col_keys if needed
+    ' Mapping table: try col_key then col_keys
     On Error Resume Next
     Set tblMap = wsKeys.ListObjects("col_key")
     If tblMap Is Nothing Then
@@ -83,20 +81,16 @@ Sub Build_QA_Sample_Set()
         MsgBox "Mapping table 'col_key' (or 'col_keys') not found on 'Keys' sheet.", vbCritical
         GoTo CleanExit
     End If
-    
+
     '--------------------------------------------------------
-    ' 1) Clear QA_Sam table body (keep validations & structure)
+    ' 1) Clear QA_Sam table data (keep structure & validations)
     '--------------------------------------------------------
     If Not tblQA.DataBodyRange Is Nothing Then
         tblQA.DataBodyRange.ClearContents
     End If
     
-    ' We'll append fresh sample rows; ensure we know starting point
-    currentQARows = 0
-    If Not tblQA.DataBodyRange Is Nothing Then
-        currentQARows = tblQA.DataBodyRange.Rows.Count
-    End If
-    
+    totalSampled = 0
+
     '--------------------------------------------------------
     ' 2) Populate Sample Set Count in tickler_count
     '--------------------------------------------------------
@@ -110,12 +104,11 @@ Sub Build_QA_Sample_Set()
         GoTo CleanExit
     End If
     
-    ' Identify columns in tickler_count
     colPct = GetTableColumnIndex(tblCount, "% of Total")
     colSample = GetTableColumnIndex(tblCount, "Sample Set Count")
-    colTicklerCount = GetTableColumnIndex(tblCount, "Tickler Type")
+    colTicklerType = GetTableColumnIndex(tblCount, "Tickler Type")
     
-    If colPct = 0 Or colSample = 0 Or colTicklerCount = 0 Then
+    If colPct = 0 Or colSample = 0 Or colTicklerType = 0 Then
         MsgBox "Required columns ('Tickler Type', '% of Total', 'Sample Set Count') not found in 'tickler_count' table.", vbCritical
         GoTo CleanExit
     End If
@@ -140,12 +133,10 @@ Sub Build_QA_Sample_Set()
             bodyRangeCount.Cells(r, colSample).Value = 0
         End If
     Next r
-    
+
     '--------------------------------------------------------
-    ' 3) Build column mapping from Keys!col_key
-    '     QA_Sam_col -> Src_tbl_col
+    ' 3) Build column mapping: QA_Sam_col -> Src_tbl_col
     '--------------------------------------------------------
-    ' Find mapping columns
     mapQAColIdx = GetTableColumnIndex(tblMap, "QA_Sam_col")
     mapSrcColIdx = GetTableColumnIndex(tblMap, "Src_tbl_col")
     
@@ -164,8 +155,9 @@ Sub Build_QA_Sample_Set()
     ' Count valid mappings
     mapCount = 0
     For r = 1 To mapBody.Rows.Count
-        If Trim$(CStr(mapBody.Cells(r, mapQAColIdx).Value)) <> "" And _
-           Trim$(CStr(mapBody.Cells(r, mapSrcColIdx).Value)) <> "" Then
+        qaHeader = Trim$(CStr(mapBody.Cells(r, mapQAColIdx).Value))
+        srcHeader = Trim$(CStr(mapBody.Cells(r, mapSrcColIdx).Value))
+        If qaHeader <> "" And srcHeader <> "" Then
             mapCount = mapCount + 1
         End If
     Next r
@@ -180,30 +172,28 @@ Sub Build_QA_Sample_Set()
     
     k = 0
     For r = 1 To mapBody.Rows.Count
-        Dim qaHeader As String
-        Dim srcHeader As String
         qaHeader = Trim$(CStr(mapBody.Cells(r, mapQAColIdx).Value))
         srcHeader = Trim$(CStr(mapBody.Cells(r, mapSrcColIdx).Value))
         
         If qaHeader <> "" And srcHeader <> "" Then
             k = k + 1
-            QAColIndex(k) = GetTableColumnIndex(tblQA, qaHeader)
-            SrcColIndex(k) = GetTableColumnIndex(tblSrc, srcHeader)
             
+            QAColIndex(k) = GetTableColumnIndex(tblQA, qaHeader)
             If QAColIndex(k) = 0 Then
                 MsgBox "QA_Sam column '" & qaHeader & "' not found in QA_Sam table.", vbCritical
                 GoTo CleanExit
             End If
             
+            SrcColIndex(k) = GetTableColumnIndex(tblSrc, srcHeader)
             If SrcColIndex(k) = 0 Then
                 MsgBox "Src_tbl column '" & srcHeader & "' not found in Src_tbl table.", vbCritical
                 GoTo CleanExit
             End If
         End If
     Next r
-    
+
     '--------------------------------------------------------
-    ' 4) Random sampling per Tickler Type
+    ' 4) Random sampling per Tickler Type (append rows)
     '--------------------------------------------------------
     srcTicklerCol = GetTableColumnIndex(tblSrc, "Tickler Type")
     If srcTicklerCol = 0 Then
@@ -211,14 +201,16 @@ Sub Build_QA_Sample_Set()
         GoTo CleanExit
     End If
     
-    Randomize ' Seed RNG
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
     
-    maxQARows = 0 ' track total rows added, mainly informational
+    Randomize
     
-    ' Loop through each Tickler Type row in tickler_count
+    ' Loop tickler_count rows
     For r = 1 To bodyRangeCount.Rows.Count
         
-        tt = Trim$(CStr(bodyRangeCount.Cells(r, colTicklerCount).Value))
+        tt = Trim$(CStr(bodyRangeCount.Cells(r, colTicklerType).Value))
         needed = 0
         If IsNumeric(bodyRangeCount.Cells(r, colSample).Value) Then
             needed = CLng(bodyRangeCount.Cells(r, colSample).Value)
@@ -226,7 +218,7 @@ Sub Build_QA_Sample_Set()
         
         If tt <> "" And needed > 0 Then
             
-            ' Collect all Src_tbl rows matching this Tickler Type
+            ' Collect matching Src_tbl rows for this Tickler Type
             matchCount = 0
             Erase matchRows
             
@@ -240,15 +232,13 @@ Sub Build_QA_Sample_Set()
                 Next i
             End With
             
-            If matchCount = 0 Then
-                ' No matching rows: skip this tickler type
-            Else
-                ' Cap needed to available rows
+            If matchCount > 0 Then
+                
                 If needed > matchCount Then
                     needed = matchCount
                 End If
                 
-                ' Partial Fisher-Yates shuffle to get unique random rows
+                ' Partial shuffle for random unique selection
                 For i = 1 To needed
                     swapIdx = i + Int((matchCount - i + 1) * Rnd)
                     tmp = matchRows(i)
@@ -256,24 +246,41 @@ Sub Build_QA_Sample_Set()
                     matchRows(swapIdx) = tmp
                 Next i
                 
-                ' Take first [needed] entries from shuffled list
+                ' Append selected rows into QA_Sam
                 For i = 1 To needed
-                    ' Add row to QA_Sam
                     Set newRow = tblQA.ListRows.Add
-                    maxQARows = maxQARows + 1
-                    
-                    ' Populate mapped columns
                     For k = 1 To mapCount
                         newRow.Range.Cells(1, QAColIndex(k)).Value = _
                             tblSrc.DataBodyRange.Cells(matchRows(i), SrcColIndex(k)).Value
                     Next k
+                    totalSampled = totalSampled + 1
                 Next i
             End If
         End If
     Next r
+
+    '--------------------------------------------------------
+    ' 5) Delete completely blank rows from QA_Sam
+    '    so table starts clean at first data row.
+    '--------------------------------------------------------
+    Dim lr As Long, c As Range, isBlank As Boolean
     
+    For lr = tblQA.ListRows.Count To 1 Step -1
+        isBlank = True
+        For Each c In tblQA.ListRows(lr).Range.Cells
+            If Len(c.Value) > 0 Then
+                isBlank = False
+                Exit For
+            End If
+        Next c
+        
+        If isBlank Then
+            tblQA.ListRows(lr).Delete
+        End If
+    Next lr
+
     MsgBox "QA Sample Set built successfully." & vbCrLf & _
-           "Total sampled rows: " & maxQARows, vbInformation
+           "Total sampled rows: " & totalSampled, vbInformation
 
 CleanExit:
     Application.ScreenUpdating = True
