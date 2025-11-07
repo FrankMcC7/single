@@ -52,6 +52,21 @@ Sub Build_SrcTbl_And_TicklerCounts()
     
     Set wbMain = ThisWorkbook
 
+'--------------------------------------------------------
+' Check and delete existing "Source file" sheet if present
+'--------------------------------------------------------
+Dim ws As Worksheet
+
+On Error Resume Next
+Set ws = wbMain.Worksheets("Source file")
+On Error GoTo 0
+
+If Not ws Is Nothing Then
+    Application.DisplayAlerts = False
+    ws.Delete
+    Application.DisplayAlerts = True
+End If
+
     '--------------------------------------------------------
     ' Validate "QA Sample Set" sheet and tickler_count table
     '--------------------------------------------------------
