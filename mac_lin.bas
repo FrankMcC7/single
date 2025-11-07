@@ -30,6 +30,7 @@ Sub Build_SrcTbl_And_TicklerCounts()
     
     Dim rngData As Range
     Dim rngVisible As Range
+    Dim bodyRange As Range
     
     Dim lastRow As Long
     Dim lastCol As Long
@@ -44,20 +45,33 @@ Sub Build_SrcTbl_And_TicklerCounts()
     Dim totalCount As Long
     Dim tick As String
     
-    Dim bodyRange As Range
     Dim maxRows As Long
     Dim rowIdx As Long
-    
+
     On Error GoTo ErrHandler
     
     Set wbMain = ThisWorkbook
-    
+
     '--------------------------------------------------------
     ' Validate "QA Sample Set" sheet and tickler_count table
     '--------------------------------------------------------
+    On Error Resume Next
     Set wsQA = wbMain.Worksheets("QA Sample Set")
-    Set tblCount = wsQA.ListObjects("tickler_count")
+    If Not wsQA Is Nothing Then
+        Set tblCount = wsQA.ListObjects("tickler_count")
+    End If
+    On Error GoTo ErrHandler
     
+    If wsQA Is Nothing Then
+        MsgBox "'QA Sample Set' sheet not found in main file.", vbCritical
+        GoTo CleanExit
+    End If
+    
+    If tblCount Is Nothing Then
+        MsgBox "Table 'tickler_count' not found on 'QA Sample Set' sheet.", vbCritical
+        GoTo CleanExit
+    End If
+
     '--------------------------------------------------------
     ' Prompt user for Source File (.xlsx)
     '--------------------------------------------------------
@@ -72,7 +86,7 @@ Sub Build_SrcTbl_And_TicklerCounts()
         End If
         filePath = .SelectedItems(1)
     End With
-    
+
     '--------------------------------------------------------
     ' Performance settings
     '--------------------------------------------------------
@@ -80,7 +94,7 @@ Sub Build_SrcTbl_And_TicklerCounts()
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
     Application.DisplayAlerts = False
-    
+
     '--------------------------------------------------------
     ' Open Source File (Read-Only) & get data range
     '--------------------------------------------------------
@@ -96,17 +110,17 @@ Sub Build_SrcTbl_And_TicklerCounts()
         End If
         Set rngData = .Range(.Cells(1, 1), .Cells(lastRow, lastCol))
     End With
-    
+
     '--------------------------------------------------------
     ' Recreate "Source file" sheet in MAIN workbook
     '--------------------------------------------------------
-    On Error ResumeNext
+    On Error Resume Next
     wbMain.Worksheets("Source file").Delete
     On Error GoTo ErrHandler
     
     Set wsDest = wbMain.Worksheets.Add(After:=wbMain.Sheets(wbMain.Sheets.Count))
     wsDest.Name = "Source file"
-    
+
     '--------------------------------------------------------
     ' Find "Tickler Group" column and filter out AER
     '--------------------------------------------------------
@@ -117,11 +131,11 @@ Sub Build_SrcTbl_And_TicklerCounts()
             Exit For
         End If
     Next i
-    
+
     If ticklerGroupCol > 0 Then
         rngData.AutoFilter Field:=ticklerGroupCol, Criteria1:="<>" & "AER"
         
-        On Error ResumeNext
+        On Error Resume Next
         Set rngVisible = rngData.SpecialCells(xlCellTypeVisible)
         On Error GoTo ErrHandler
         
@@ -136,14 +150,14 @@ Sub Build_SrcTbl_And_TicklerCounts()
         ' If "Tickler Group" not found, copy all data
         rngData.Copy Destination:=wsDest.Range("A1")
     End If
-    
+
     '--------------------------------------------------------
     ' Close Source File without saving
     '--------------------------------------------------------
     wbSrc.Close SaveChanges:=False
     Set wbSrc = Nothing
     Set wsSrc = Nothing
-    
+
     '--------------------------------------------------------
     ' Create Src_tbl on "Source file"
     '--------------------------------------------------------
@@ -156,9 +170,9 @@ Sub Build_SrcTbl_And_TicklerCounts()
         End If
         Set rngData = .Range(.Cells(1, 1), .Cells(lastRow, lastCol))
     End With
-    
+
     ' Remove any existing Src_tbl (safety)
-    On Error ResumeNext
+    On Error Resume Next
     For Each lo In wsDest.ListObjects
         If lo.Name = "Src_tbl" Then
             lo.Unlist
@@ -166,13 +180,13 @@ Sub Build_SrcTbl_And_TicklerCounts()
         End If
     Next lo
     On Error GoTo ErrHandler
-    
+
     Set tblSrc = wsDest.ListObjects.Add( _
                     SourceType:=xlSrcRange, _
                     Source:=rngData, _
                     XlListObjectHasHeaders:=xlYes)
     tblSrc.Name = "Src_tbl"
-    
+
     '--------------------------------------------------------
     ' Locate "Tickler Type" column in Src_tbl
     '--------------------------------------------------------
@@ -183,31 +197,29 @@ Sub Build_SrcTbl_And_TicklerCounts()
             Exit For
         End If
     Next i
-    
+
     If ticklerTypeCol = 0 Then
         MsgBox "'Tickler Type' column not found in Src_tbl.", vbCritical
         GoTo CleanExit
     End If
-    
+
     '--------------------------------------------------------
     ' Prepare tickler_count table body (no resizing)
     '--------------------------------------------------------
-    ' Ensure at least 1 data row exists so DataBodyRange is valid
     If tblCount.ListRows.Count = 0 Then
         tblCount.ListRows.Add
     End If
-    
+
     Set bodyRange = tblCount.DataBodyRange
     bodyRange.ClearContents
-    
     maxRows = bodyRange.Rows.Count
-    
+
     '--------------------------------------------------------
     ' Build dictionary of Tickler Type counts
     '--------------------------------------------------------
     Set dict = CreateObject("Scripting.Dictionary")
     dict.CompareMode = vbTextCompare
-    
+
     totalCount = 0
     With tblSrc.DataBodyRange
         For r = 1 To .Rows.Count
@@ -222,23 +234,23 @@ Sub Build_SrcTbl_And_TicklerCounts()
             End If
         Next r
     End With
-    
+
     If dict.Count = 0 Or totalCount = 0 Then
         MsgBox "No Tickler Type data found in Src_tbl to populate tickler_count.", vbExclamation
         GoTo CleanExit
     End If
-    
+
     '--------------------------------------------------------
-    ' Check capacity: don't expand into table below
+    ' Check capacity vs existing tickler_count rows
     '--------------------------------------------------------
     If dict.Count > maxRows Then
-        MsgBox "There are " & dict.Count & " unique Tickler Types, " & _
+        MsgBox "There are " & dict.Count & " unique Tickler Types," & vbCrLf & _
                "but only " & maxRows & " rows available in 'tickler_count' table." & vbCrLf & _
                "Add more rows to tickler_count (above the next table) and rerun.", _
                vbCritical
         GoTo CleanExit
     End If
-    
+
     '--------------------------------------------------------
     ' Populate tickler_count within existing rows
     '   Col1 = Tickler Type
@@ -254,12 +266,12 @@ Sub Build_SrcTbl_And_TicklerCounts()
         End With
         rowIdx = rowIdx + 1
     Next key
-    
+
     ' Format % column
     With tblCount.ListColumns(3).DataBodyRange
         .NumberFormat = "0.00%"
     End With
-    
+
     '--------------------------------------------------------
     ' Done
     '--------------------------------------------------------
