@@ -1,0 +1,204 @@
+Option Explicit
+
+Sub Send_QA_Emails_Grouped()
+    Const SEND_ON_BEHALF As Boolean = False  ' change to True if you have delegate rights
+    Const WELL_DONE_GIF As String = "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif"
+    
+    Dim wb As Workbook
+    Dim wsQA As Worksheet, wsKeys As Worksheet, wsTemp As Worksheet
+    Dim loQA As ListObject, loKeys As ListObject
+    Dim olApp As Object, olMail As Object
+    Dim dictCSA As Object
+    Dim i As Long, periodText As String
+    
+    Dim colComp As Long, colCSA As Long, colReviewer As Long, colPF As Long
+    
+    Set wb = ThisWorkbook
+    Set wsQA = wb.Worksheets("QA Sample Set")
+    Set wsKeys = wb.Worksheets("Keys")
+    Set loQA = wsQA.ListObjects("QA_Sam")
+    Set loKeys = wsKeys.ListObjects("Em_add")
+    
+    ' Identify columns
+    colComp = GetListColumnIndex(loQA, Array("Completed Date"))
+    colCSA = GetListColumnIndex(loQA, Array("Offshore CSA (Completed by)"))
+    colReviewer = GetListColumnIndex(loQA, Array("Reviewer"))
+    colPF = GetListColumnIndex(loQA, Array("Pass/Fail"))
+    
+    If colComp = 0 Or colCSA = 0 Or colReviewer = 0 Or colPF = 0 Then
+        MsgBox "Required columns missing in QA_Sam.", vbCritical
+        Exit Sub
+    End If
+    
+    ' Determine period
+    Dim haveDate As Boolean, dt As Date, minDate As Date, maxDate As Date
+    haveDate = False
+    For i = 1 To loQA.ListRows.Count
+        If IsDate(loQA.DataBodyRange.Cells(i, colComp).Value) Then
+            dt = CDate(loQA.DataBodyRange.Cells(i, colComp).Value)
+            If Not haveDate Then
+                minDate = dt: maxDate = dt: haveDate = True
+            Else
+                If dt < minDate Then minDate = dt
+                If dt > maxDate Then maxDate = dt
+            End If
+        End If
+    Next i
+    
+    If haveDate Then
+        periodText = Format(minDate, "mmmm yyyy")
+    Else
+        periodText = InputBox("Couldn't detect Completed Date period. Please enter manually (e.g. November 2025):", "Enter Period")
+        If periodText = "" Then Exit Sub
+    End If
+    
+    ' Prepare temp sheet
+    On Error Resume Next
+    Set wsTemp = wb.Worksheets("Temp_QA_Email")
+    On Error GoTo 0
+    If Not wsTemp Is Nothing Then wsTemp.Cells.Clear Else Set wsTemp = wb.Worksheets.Add
+    wsTemp.Name = "Temp_QA_Email"
+    
+    ' Build unique CSA + Pass/Fail combinations
+    Set dictCSA = CreateObject("Scripting.Dictionary")
+    Dim csa As String, pf As String, reviewer As String, key As String
+    
+    For i = 1 To loQA.ListRows.Count
+        csa = Trim(loQA.DataBodyRange.Cells(i, colCSA).Value)
+        pf = LCase(Trim(loQA.DataBodyRange.Cells(i, colPF).Value))
+        reviewer = Trim(loQA.DataBodyRange.Cells(i, colReviewer).Value)
+        If csa <> "" And (pf = "pass" Or pf = "fail") Then
+            key = csa & "|" & pf & "|" & reviewer
+            If Not dictCSA.exists(key) Then dictCSA.Add key, reviewer
+        End If
+    Next i
+    
+    ' Outlook setup
+    On Error Resume Next
+    Set olApp = GetObject(Class:="Outlook.Application")
+    If olApp Is Nothing Then Set olApp = CreateObject("Outlook.Application")
+    On Error GoTo 0
+    
+    If olApp Is Nothing Then
+        MsgBox "Outlook not found. Open Outlook and try again.", vbCritical
+        Exit Sub
+    End If
+    
+    ' Loop through each CSA + status
+    Dim arr, CSAName As String, PFStatus As String, ReviewerName As String
+    For Each key In dictCSA.Keys
+        arr = Split(key, "|")
+        CSAName = arr(0)
+        PFStatus = arr(1)
+        ReviewerName = arr(2)
+        
+        ' Lookup emails
+        Dim reviewerEmail As String, csaEmail As String
+        reviewerEmail = GetEmailFromName(loKeys, ReviewerName)
+        csaEmail = GetEmailFromName(loKeys, CSAName)
+        If csaEmail = "" Then GoTo NextKey
+        
+        ' Filter QA_Sam for this CSA + status
+        wsTemp.Cells.Clear
+        loQA.DataBodyRange.AutoFilter Field:=colCSA, Criteria1:=CSAName
+        loQA.DataBodyRange.AutoFilter Field:=colPF, Criteria1:=PFStatus
+        
+        loQA.DataBodyRange.SpecialCells(xlCellTypeVisible).Copy
+        wsTemp.Range("A1").PasteSpecial xlPasteValues
+        wsTemp.ListObjects.Add xlSrcRange, wsTemp.Range("A1").CurrentRegion, , xlYes
+        
+        loQA.AutoFilter.ShowAllData
+        
+        ' Convert filtered data to HTML table
+        Dim htmlTable As String
+        htmlTable = RangeToHTML(wsTemp.Range("A1").CurrentRegion)
+        
+        ' Create email
+        Dim olMail As Object
+        Set olMail = olApp.CreateItem(0)
+        
+        Dim subjectText As String, bodyHTML As String
+        
+        Select Case PFStatus
+            Case "pass"
+                subjectText = "QA Results for " & periodText & " – PASSED"
+                bodyHTML = "<p>Hi " & CSAName & ",</p>" & _
+                           "<p>Great news! Your QA review items for <b>" & periodText & "</b> have all passed successfully.<br>" & _
+                           "Excellent attention to detail and consistency this round.<br>" & _
+                           "Keep up the great work!</p>" & _
+                           "<p><img src='" & WELL_DONE_GIF & "' width='200'></p>" & _
+                           "<p><b>Summary of your passed items:</b></p>" & htmlTable & _
+                           "<p>Regards,<br>" & ReviewerName & "</p>"
+            Case "fail"
+                subjectText = "QA Results for " & periodText & " – ACTION REQUIRED"
+                bodyHTML = "<p>Hi " & CSAName & ",</p>" & _
+                           "<p>The following items did not pass QA for the period <b>" & periodText & "</b>. " & _
+                           "Please review the details and take corrective action.</p>" & htmlTable & _
+                           "<p><b>Kindly complete the required remediation within 5 business days. " & _
+                           "Once the remediation has been completed, please notify me/Reviewer so it can be confirmed and closed.</b></p>" & _
+                           "<p>Regards,<br>" & ReviewerName & "</p>"
+        End Select
+        
+        With olMail
+            .To = csaEmail
+            .Subject = subjectText
+            .HTMLBody = bodyHTML
+            If SEND_ON_BEHALF And reviewerEmail <> "" Then .SentOnBehalfOfName = reviewerEmail
+            .Send
+        End With
+        
+NextKey:
+    Next key
+    
+    MsgBox "QA result emails sent for period: " & periodText, vbInformation
+End Sub
+
+
+' Helper: lookup email by name
+Private Function GetEmailFromName(lo As ListObject, personName As String) As String
+    Dim r As Range
+    On Error Resume Next
+    Set r = lo.ListColumns("Name").DataBodyRange.Find(What:=personName, LookIn:=xlValues, LookAt:=xlWhole)
+    On Error GoTo 0
+    If Not r Is Nothing Then
+        GetEmailFromName = Trim(r.Offset(0, 1).Value)
+    Else
+        GetEmailFromName = ""
+    End If
+End Function
+
+
+' Helper: convert range to HTML table
+Private Function RangeToHTML(rng As Range) As String
+    Dim fso As Object, ts As Object, tempFile As String
+    Dim tempWB As Workbook
+    
+    rng.Copy
+    Set tempWB = Workbooks.Add(1)
+    tempWB.Sheets(1).Cells(1).PasteSpecial xlPasteValues
+    tempWB.Sheets(1).Cells(1).PasteSpecial xlPasteFormats
+    
+    tempFile = Environ$("temp") & "\" & Format(Now, "yyyymmddhhmmss") & ".htm"
+    tempWB.SaveAs tempFile, xlHTML
+    tempWB.Close False
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set ts = fso.GetFile(tempFile).OpenAsTextStream(1, -2)
+    RangeToHTML = ts.ReadAll
+    ts.Close
+    Kill tempFile
+End Function
+
+
+' Helper: get column index by name
+Private Function GetListColumnIndex(lo As ListObject, names As Variant) As Long
+    Dim lc As ListColumn, nm As Variant
+    For Each nm In names
+        For Each lc In lo.ListColumns
+            If StrComp(Trim(lc.Name), Trim(CStr(nm)), vbTextCompare) = 0 Then
+                GetListColumnIndex = lc.Index
+                Exit Function
+            End If
+        Next lc
+    Next nm
+End Function
