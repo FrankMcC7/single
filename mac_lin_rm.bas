@@ -21,20 +21,20 @@ Sub Build_QA_Dashboard()
     Dim colIncorrect As Long
     Dim key As Variant
     Dim rowOut As Long
+    Dim cell As Range
     
     Set wb = ThisWorkbook
     Set src = wb.Worksheets("QA Sample Set").ListObjects("QA_Sam")
     
-    '=== (1) Recreate Reporting_Metrics sheet cleanly ===
+    '=== Recreate Reporting_Metrics sheet ===
     On Error Resume Next
     Set ws = wb.Worksheets("Reporting_Metrics")
-    On Error GoTo 0
-    
     If Not ws Is Nothing Then
         Application.DisplayAlerts = False
         ws.Delete
         Application.DisplayAlerts = True
     End If
+    On Error GoTo 0
     
     Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
     ws.Name = "Reporting_Metrics"
@@ -43,8 +43,10 @@ Sub Build_QA_Dashboard()
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
     
-    '=== (2) Determine QA period from Completion Date for rows where Pass/Fail is filled ===
-    Set compRng = src.ListColumns("Completion Date").DataBodyRange
+    '========================================================
+    ' 1) Determine period from Completed Date
+    '========================================================
+    Set compRng = src.ListColumns("Completed Date").DataBodyRange
     Set pfRng = src.ListColumns("Pass/Fail").DataBodyRange
     
     haveDate = False
@@ -74,14 +76,15 @@ Sub Build_QA_Dashboard()
         periodText = ""
     End If
     
-    '=== (3) Summary heading ===
+    '========================================================
+    ' 2) Summary heading + metrics
+    '========================================================
     With ws.Range("A1")
         .Value = "QA Summary Metrics" & periodText
         .Font.Bold = True
         .Font.Size = 14
     End With
     
-    '=== (4) Summary metrics (using Pass/Fail values only) ===
     ws.Range("A3").Value = "Total QA Reviewed"
     ws.Range("B3").Formula = "=COUNTIF(QA_Sam[Pass/Fail],""<>"")"
     
@@ -101,23 +104,26 @@ Sub Build_QA_Dashboard()
     
     ws.Range("A3:A7").Font.Bold = True
     
-    '=== (5) Create a single PivotCache from QA_Sam ===
+    '========================================================
+    ' 3) Pivot cache
+    '========================================================
     Set pvtCache = wb.PivotCaches.Create( _
         SourceType:=xlDatabase, _
         SourceData:=src.Range)
     
+    '========================================================
+    ' 4) Overall Pass vs Fail (Donut)
+    '========================================================
     nextRow = 10
-    
-    '=== (6) Overall Pass vs Fail Pivot + Donut ===
     ws.Range("A" & nextRow).Value = "Pass vs Fail (Overall)"
     ws.Range("A" & nextRow).Font.Bold = True
     
-    Set pvt = ws.PivotTables.Add( _
-        PivotCache:=pvtCache, _
+    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
         TableDestination:=ws.Range("A" & (nextRow + 1)), _
         TableName:="pvtResultSplit")
     
     With pvt
+        .ClearAllFilters
         .PivotFields("Pass/Fail").Orientation = xlRowField
         .AddDataField .PivotFields("Pass/Fail"), "Count of Items", xlCount
     End With
@@ -131,17 +137,19 @@ Sub Build_QA_Dashboard()
         .ChartTitle.Text = "Pass vs Fail"
     End With
     
-    '=== (7) Pass/Fail by Reviewer Pivot + Bar Chart ===
+    '========================================================
+    ' 5) Pass/Fail by Reviewer (Bar)
+    '========================================================
     nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
     ws.Range("A" & nextRow).Value = "Pass/Fail by Reviewer"
     ws.Range("A" & nextRow).Font.Bold = True
     
-    Set pvt = ws.PivotTables.Add( _
-        PivotCache:=pvtCache, _
+    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
         TableDestination:=ws.Range("A" & (nextRow + 1)), _
         TableName:="pvtReviewer")
     
     With pvt
+        .ClearAllFilters
         .PivotFields("Reviewer").Orientation = xlRowField
         .PivotFields("Pass/Fail").Orientation = xlColumnField
         
@@ -164,17 +172,19 @@ Sub Build_QA_Dashboard()
         .ChartTitle.Text = "Reviewer - Pass/Fail Split"
     End With
     
-    '=== (8) Pass/Fail by Tickler Type Pivot + Bar Chart ===
+    '========================================================
+    ' 6) Pass/Fail by Tickler Type (Bar)
+    '========================================================
     nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
     ws.Range("A" & nextRow).Value = "Pass/Fail by Tickler Type"
     ws.Range("A" & nextRow).Font.Bold = True
     
-    Set pvt = ws.PivotTables.Add( _
-        PivotCache:=pvtCache, _
+    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
         TableDestination:=ws.Range("A" & (nextRow + 1)), _
         TableName:="pvtTickler")
     
     With pvt
+        .ClearAllFilters
         .PivotFields("Tickler Type").Orientation = xlRowField
         .PivotFields("Pass/Fail").Orientation = xlColumnField
         
@@ -197,7 +207,9 @@ Sub Build_QA_Dashboard()
         .ChartTitle.Text = "Tickler Type - Pass/Fail Split"
     End With
     
-    '=== (9) Incorrect Data Elements Count Table ===
+    '========================================================
+    ' 7) Incorrect Data Elements Count
+    '========================================================
     nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
     ws.Range("A" & nextRow).Value = "Incorrect Data Elements Count"
     ws.Range("A" & nextRow).Font.Bold = True
@@ -205,7 +217,6 @@ Sub Build_QA_Dashboard()
     Set dict = CreateObject("Scripting.Dictionary")
     colIncorrect = src.ListColumns("Incorrect Data Elements").Index
     
-    Dim cell As Range
     For Each cell In src.ListColumns(colIncorrect).DataBodyRange
         If Trim(cell.Value) <> "" Then
             dict(cell.Value) = dict(cell.Value) + 1
@@ -225,7 +236,9 @@ Sub Build_QA_Dashboard()
     
     ws.Columns.AutoFit
     
-    '=== (10) Reset app settings ===
+    '========================================================
+    ' 8) Cleanup
+    '========================================================
     Application.Calculation = xlCalculationAutomatic
     Application.EnableEvents = True
     Application.ScreenUpdating = True
