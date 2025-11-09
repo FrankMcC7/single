@@ -7,6 +7,7 @@ Sub Send_QA_Emails_Grouped()
     Dim wsQA As Worksheet, wsKeys As Worksheet, wsTemp As Worksheet
     Dim loQA As ListObject, loKeys As ListObject
     Dim olApp As Object, olMail As Object
+    Dim loTmp As ListObject
     
     Dim colComp As Long, colCSA As Long, colReviewer As Long, colPF As Long
     Dim i As Long
@@ -17,7 +18,7 @@ Sub Send_QA_Emails_Grouped()
     
     Dim dictCSA As Object
     Dim key As Variant
-    Dim csa As String, pf As String, reviewer As String, combo As String
+    Dim combo As String
     
     Set wb = ThisWorkbook
     Set wsQA = wb.Worksheets("QA Sample Set")
@@ -53,7 +54,6 @@ Sub Send_QA_Emails_Grouped()
     Next i
     
     If haveDate Then
-        ' Use inclusive range min..max for filtering
         startDate = DateSerial(Year(minDate), Month(minDate), Day(minDate))
         endDate = DateSerial(Year(maxDate), Month(maxDate), Day(maxDate))
         
@@ -70,12 +70,11 @@ Sub Send_QA_Emails_Grouped()
             MsgBox "Operation cancelled - no period provided.", vbExclamation
             Exit Sub
         End If
-        ' If manually entered, we'll include all rows with Pass/Fail
         startDate = 0
         endDate = 0
     End If
     
-    '--- temp sheet for filtered QA_Sam extracts ---
+    '--- prep Temp sheet ---
     On Error Resume Next
     Set wsTemp = wb.Worksheets("Temp_QA_Email")
     On Error GoTo 0
@@ -84,14 +83,12 @@ Sub Send_QA_Emails_Grouped()
         wsTemp.Name = "Temp_QA_Email"
     Else
         wsTemp.Cells.Clear
-        ' remove any existing tables
-        Dim loTmp As ListObject
         For Each loTmp In wsTemp.ListObjects
             loTmp.Delete
         Next loTmp
     End If
     
-    '--- build unique CSA + status + reviewer combinations for this period ---
+    '--- build unique CSA + status + reviewer combos for this period ---
     Set dictCSA = CreateObject("Scripting.Dictionary")
     
     For i = 1 To loQA.ListRows.Count
@@ -103,9 +100,8 @@ Sub Send_QA_Emails_Grouped()
         thisRev = Trim(loQA.DataBodyRange.Cells(i, colReviewer).Value)
         thisDate = loQA.DataBodyRange.Cells(i, colComp).Value
         
-        If thisCSA <> "" And thisRev <> "" And _
-           (thisPF = "pass" Or thisPF = "fail") Then
-           
+        If thisCSA <> "" And thisRev <> "" And (thisPF = "pass" Or thisPF = "fail") Then
+            
             If haveDate And IsDate(thisDate) Then
                 dt = CDate(thisDate)
                 If dt < startDate Or dt > endDate Then GoTo SkipRow
@@ -138,10 +134,13 @@ SkipRow:
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     
-    '--- loop through each CSA+status+reviewer group ---
+    '--- loop through each CSA + status + reviewer group ---
     Dim arr As Variant
     Dim CSAName As String, PFStatus As String, ReviewerName As String
     Dim reviewerEmail As String, csaEmail As String
+    Dim dataRange As Range
+    Dim htmlTable As String
+    Dim subj As String, bodyHTML As String
     
     For Each key In dictCSA.Keys
         arr = Split(CStr(key), "|")
@@ -149,19 +148,20 @@ SkipRow:
         PFStatus = arr(1)
         ReviewerName = arr(2)
         
-        reviewerEmail = GetEmailFromName(loKeys, ReviewerName)
-        csaEmail = GetEmailFromName(loKeys, CSAName)
+        reviewerEmail = GetEmailFromName(loKeys, CSAName:=ReviewerName)
+        csaEmail = GetEmailFromName(loKeys, CSAName:=CSAName)
+        
         If csaEmail = "" Then GoTo NextKey
         
         '--- build filtered QA_Sam subset for this CSA + status (+ period) ---
         wsTemp.Cells.Clear
-        Dim loTmp As ListObject
         For Each loTmp In wsTemp.ListObjects
             loTmp.Delete
         Next loTmp
         
-        ' apply filters on QA table
+        On Error Resume Next
         loQA.AutoFilter.ShowAllData
+        On Error GoTo 0
         
         loQA.Range.AutoFilter Field:=colCSA, Criteria1:=CSAName
         loQA.Range.AutoFilter Field:=colPF, Criteria1:=IIf(PFStatus = "pass", "Pass", "Fail")
@@ -176,16 +176,12 @@ SkipRow:
         loQA.Range.SpecialCells(xlCellTypeVisible).Copy wsTemp.Range("A1")
         On Error GoTo 0
         
-        ' clear filters
         On Error Resume Next
         loQA.AutoFilter.ShowAllData
         On Error GoTo 0
         
-        ' if only header copied or nothing, skip
         If wsTemp.Range("A1").CurrentRegion.Rows.Count <= 1 Then GoTo NextKey
         
-        ' make the pasted range a table for nicer HTML
-        Dim dataRange As Range
         Set dataRange = wsTemp.Range("A1").CurrentRegion
         
         For Each loTmp In wsTemp.ListObjects
@@ -195,11 +191,9 @@ SkipRow:
         wsTemp.ListObjects.Add xlSrcRange, dataRange, , xlYes
         wsTemp.ListObjects(1).Name = "QA_Subset"
         
-        Dim htmlTable As String
         htmlTable = RangeToHTML(wsTemp.Range("A1").CurrentRegion)
         
-        '--- create email ---
-        Dim subj As String, bodyHTML As String
+        '--- compose email ---
         Set olMail = olApp.CreateItem(0)
         
         If PFStatus = "pass" Then
@@ -226,10 +220,10 @@ SkipRow:
         
         With olMail
             .To = csaEmail
-            If reviewerEmail <> "" Then .CC = reviewerEmail  ' reviewer in CC
+            If reviewerEmail <> "" Then .CC = reviewerEmail   ' reviewer in CC
             .Subject = subj
             .HTMLBody = bodyHTML
-            ' For testing, swap .Send with .Display
+            ' For testing, switch to .Display
             .Send
         End With
         
@@ -244,11 +238,11 @@ End Sub
 
 '================ HELPER: Get email from Keys!Em_add =================
 
-Private Function GetEmailFromName(lo As ListObject, personName As String) As String
+Private Function GetEmailFromName(lo As ListObject, CSAName As String) As String
     Dim r As Range
     On Error Resume Next
     Set r = lo.ListColumns("Name").DataBodyRange.Find( _
-                What:=personName, LookIn:=xlValues, LookAt:=xlWhole)
+                What:=CSAName, LookIn:=xlValues, LookAt:=xlWhole)
     On Error GoTo 0
     If Not r Is Nothing Then
         GetEmailFromName = Trim$(r.Offset(0, 1).Value)
