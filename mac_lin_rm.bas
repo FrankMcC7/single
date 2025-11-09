@@ -1,247 +1,265 @@
 Option Explicit
 
-Sub Build_QA_Dashboard()
+Sub Update_QA_Metrics()
     Dim wb As Workbook
-    Dim ws As Worksheet
-    Dim src As ListObject
-    Dim pvtCache As PivotCache
-    Dim pvt As PivotTable
-    Dim rng As Range
-    Dim chartObj As ChartObject
-    Dim nextRow As Long
-    
-    Dim compRng As Range, pfRng As Range
-    Dim i As Long
-    Dim dt As Date
-    Dim minDate As Date, maxDate As Date
-    Dim haveDate As Boolean
+    Dim wsSrc As Worksheet, wsRep As Worksheet
+    Dim lo As ListObject
+    Dim dateCol As Range, pfCol As Range, tickCol As Range, revCol As Range, csaCol As Range
     Dim periodText As String
+    Dim haveDate As Boolean
+    Dim i As Long, dt As Date, minDate As Date, maxDate As Date
     
-    Dim dict As Object
-    Dim colIncorrect As Long
-    Dim key As Variant
-    Dim rowOut As Long
-    Dim cell As Range
+    Dim colCompletion As Long, colPassFail As Long, colTickler As Long, colReviewer As Long, colCSA As Long
+    Dim totalReviewed As Long, totalPass As Long, totalFail As Long
+    
+    '--- Dictionaries for detail splits ---
+    Dim dictTick As Object, dictTickPass As Object
+    Dim dictRev As Object, dictRevPass As Object
+    Dim dictCSA As Object, dictCSAPass As Object
+    Set dictTick = CreateObject("Scripting.Dictionary")
+    Set dictTickPass = CreateObject("Scripting.Dictionary")
+    Set dictRev = CreateObject("Scripting.Dictionary")
+    Set dictRevPass = CreateObject("Scripting.Dictionary")
+    Set dictCSA = CreateObject("Scripting.Dictionary")
+    Set dictCSAPass = CreateObject("Scripting.Dictionary")
     
     Set wb = ThisWorkbook
-    Set src = wb.Worksheets("QA Sample Set").ListObjects("QA_Sam")
+    Set wsSrc = wb.Worksheets("QA Sample Set")
+    Set lo = wsSrc.ListObjects("QA_Sam")
     
-    '=== Recreate Reporting_Metrics sheet ===
-    On Error Resume Next
-    Set ws = wb.Worksheets("Reporting_Metrics")
-    If Not ws Is Nothing Then
-        Application.DisplayAlerts = False
-        ws.Delete
-        Application.DisplayAlerts = True
+    '=== locate relevant columns ===
+    colCompletion = GetListColumnIndex(lo, Array("Completion Date", "Date Reviewed", "Reviewed"))
+    colPassFail = GetListColumnIndex(lo, Array("Pass/Fail"))
+    colTickler = GetListColumnIndex(lo, Array("Tickler Type"))
+    colReviewer = GetListColumnIndex(lo, Array("Reviewer"))
+    colCSA = GetListColumnIndex(lo, Array("Offshore CSA (Completed by)", "Offshore CSA"))
+    
+    If colCompletion = 0 Or colPassFail = 0 Then
+        MsgBox "Required columns not found in QA_Sam.", vbCritical
+        Exit Sub
     End If
-    On Error GoTo 0
     
-    Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
-    ws.Name = "Reporting_Metrics"
+    Set dateCol = lo.ListColumns(colCompletion).DataBodyRange
+    Set pfCol = lo.ListColumns(colPassFail).DataBodyRange
+    Set tickCol = lo.ListColumns(colTickler).DataBodyRange
+    Set revCol = lo.ListColumns(colReviewer).DataBodyRange
+    Set csaCol = lo.ListColumns(colCSA).DataBodyRange
     
-    Application.ScreenUpdating = False
-    Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    '=== determine QA period ===
+    For i = 1 To dateCol.Rows.Count
+        If Trim(pfCol.Cells(i, 1).Value) <> "" And IsDate(dateCol.Cells(i, 1).Value) Then
+            dt = CDate(dateCol.Cells(i, 1).Value)
+            If Not haveDate Then
+                minDate = dt
+                maxDate = dt
+                haveDate = True
+            Else
+                If dt < minDate Then minDate = dt
+                If dt > maxDate Then maxDate = dt
+            End If
+        End If
+    Next i
     
-    '========================================================
-    ' 1) Determine period from Completed Date
-    '========================================================
-    Set compRng = src.ListColumns("Completed Date").DataBodyRange
-    Set pfRng = src.ListColumns("Pass/Fail").DataBodyRange
+    If Not haveDate Then
+        MsgBox "No valid Completion Dates found with Pass/Fail entries.", vbExclamation
+        Exit Sub
+    End If
     
-    haveDate = False
-    For i = 1 To compRng.Rows.Count
-        If Trim(pfRng.Cells(i, 1).Value) <> "" Then
-            If IsDate(compRng.Cells(i, 1).Value) Then
-                dt = CDate(compRng.Cells(i, 1).Value)
-                If Not haveDate Then
-                    minDate = dt
-                    maxDate = dt
-                    haveDate = True
-                Else
-                    If dt < minDate Then minDate = dt
-                    If dt > maxDate Then maxDate = dt
+    If Month(minDate) = Month(maxDate) And Year(minDate) = Year(maxDate) Then
+        periodText = Format(minDate, "mmmm yyyy")
+    Else
+        periodText = Format(minDate, "mmmm yyyy") & " - " & Format(maxDate, "mmmm yyyy")
+    End If
+    
+    '=== overall counts ===
+    For i = 1 To pfCol.Rows.Count
+        If Trim(pfCol.Cells(i, 1).Value) <> "" Then
+            totalReviewed = totalReviewed + 1
+            Select Case LCase(Trim(pfCol.Cells(i, 1).Value))
+                Case "pass": totalPass = totalPass + 1
+                Case "fail": totalFail = totalFail + 1
+            End Select
+        End If
+    Next i
+    
+    '=== tickler, reviewer, CSA splits ===
+    For i = 1 To pfCol.Rows.Count
+        Dim status As String
+        status = LCase(Trim(pfCol.Cells(i, 1).Value))
+        If status <> "" Then
+            ' tickler
+            If colTickler > 0 Then
+                Dim tKey As String
+                tKey = Trim(tickCol.Cells(i, 1).Value)
+                If tKey <> "" Then
+                    dictTick(tKey) = dictTick(tKey) + 1
+                    If status = "pass" Then dictTickPass(tKey) = dictTickPass(tKey) + 1
+                End If
+            End If
+            
+            ' reviewer
+            If colReviewer > 0 Then
+                Dim rKey As String
+                rKey = Trim(revCol.Cells(i, 1).Value)
+                If rKey <> "" Then
+                    dictRev(rKey) = dictRev(rKey) + 1
+                    If status = "pass" Then dictRevPass(rKey) = dictRevPass(rKey) + 1
+                End If
+            End If
+            
+            ' offshore csa
+            If colCSA > 0 Then
+                Dim cKey As String
+                cKey = Trim(csaCol.Cells(i, 1).Value)
+                If cKey <> "" Then
+                    dictCSA(cKey) = dictCSA(cKey) + 1
+                    If status = "pass" Then dictCSAPass(cKey) = dictCSAPass(cKey) + 1
                 End If
             End If
         End If
     Next i
     
-    If haveDate Then
-        If Month(minDate) = Month(maxDate) And Year(minDate) = Year(maxDate) Then
-            periodText = " - " & Format(minDate, "mmmm yyyy")
-        Else
-            periodText = " - " & Format(minDate, "mmmm yyyy") & " - " & Format(maxDate, "mmmm yyyy")
-        End If
-    Else
-        periodText = ""
+    '=== prepare reporting sheet ===
+    On Error Resume Next
+    Set wsRep = wb.Worksheets("Reporting_Metrics")
+    On Error GoTo 0
+    If wsRep Is Nothing Then
+        Set wsRep = wb.Worksheets.Add
+        wsRep.Name = "Reporting_Metrics"
     End If
     
-    '========================================================
-    ' 2) Summary heading + metrics
-    '========================================================
-    With ws.Range("A1")
-        .Value = "QA Summary Metrics" & periodText
-        .Font.Bold = True
-        .Font.Size = 14
+    '=== 1. Summary ===
+    AppendSummary wsRep, periodText, totalReviewed, totalPass, totalFail
+    
+    '=== 2. Tickler ===
+    AppendBreakdown wsRep, "Tickler_Type_Metrics", "Tickler Type", periodText, dictTick, dictTickPass
+    
+    '=== 3. Reviewer ===
+    AppendBreakdown wsRep, "Reviewer_Metrics", "Reviewer", periodText, dictRev, dictRevPass
+    
+    '=== 4. Offshore CSA ===
+    AppendBreakdown wsRep, "Offshore_CSA_Metrics", "Offshore CSA (Completed by)", periodText, dictCSA, dictCSAPass
+    
+    wsRep.Columns.AutoFit
+    MsgBox "QA Metrics updated for " & periodText, vbInformation
+End Sub
+
+'-----------------------------------------------------------
+' APPEND SUMMARY
+'-----------------------------------------------------------
+Private Sub AppendSummary(ws As Worksheet, periodText As String, totalReviewed As Long, totalPass As Long, totalFail As Long)
+    Dim lo As ListObject, rng As Range
+    Dim passPct As Double, failPct As Double
+    passPct = IIf(totalReviewed = 0, 0, totalPass / totalReviewed)
+    failPct = IIf(totalReviewed = 0, 0, totalFail / totalReviewed)
+    
+    On Error Resume Next
+    Set lo = ws.ListObjects("Summary_Stats")
+    On Error GoTo 0
+    
+    If lo Is Nothing Then
+        ws.Range("A1").Value = "Metric"
+        ws.Range("B1").Value = periodText
+        ws.Range("A2").Resize(5, 1).Value = Application.Transpose(Array( _
+            "Total QA Reviewed", "Total Pass", "Total Fail", "Pass %", "Fail %"))
+        ws.ListObjects.Add xlSrcRange, ws.Range("A1:B6"), , xlYes
+        ws.ListObjects(1).Name = "Summary_Stats"
+        Set lo = ws.ListObjects("Summary_Stats")
+    Else
+        lo.ListColumns.Add
+        lo.HeaderRowRange.Cells(1, lo.ListColumns.Count).Value = periodText
+    End If
+    
+    Dim colIdx As Long
+    colIdx = lo.ListColumns.Count
+    With lo.DataBodyRange
+        .Cells(1, colIdx - 1 + 1).Value = totalReviewed
+        .Cells(2, colIdx - 1 + 1).Value = totalPass
+        .Cells(3, colIdx - 1 + 1).Value = totalFail
+        .Cells(4, colIdx - 1 + 1).Value = passPct
+        .Cells(5, colIdx - 1 + 1).Value = failPct
     End With
+    lo.DataBodyRange.Rows(4).Cells(colIdx).NumberFormat = "0.0%"
+    lo.DataBodyRange.Rows(5).Cells(colIdx).NumberFormat = "0.0%"
+End Sub
+
+'-----------------------------------------------------------
+' APPEND BREAKDOWN (Tickler, Reviewer, CSA)
+'-----------------------------------------------------------
+Private Sub AppendBreakdown(ws As Worksheet, tblName As String, firstColHeader As String, periodText As String, dictAll As Object, dictPass As Object)
+    Dim lo As ListObject
+    Dim nextCol As Long, key As Variant, found As Range
+    Dim colCount As Long, colPct As Long
+    Dim anchorRow As Long
     
-    ws.Range("A3").Value = "Total QA Reviewed"
-    ws.Range("B3").Formula = "=COUNTIF(QA_Sam[Pass/Fail],""<>"")"
+    On Error Resume Next
+    Set lo = ws.ListObjects(tblName)
+    On Error GoTo 0
     
-    ws.Range("A4").Value = "Total Pass"
-    ws.Range("B4").Formula = "=COUNTIF(QA_Sam[Pass/Fail],""Pass"")"
+    If lo Is Nothing Then
+        ' place table a few rows below existing ones dynamically
+        anchorRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row + 3
+        ws.Range("A" & anchorRow).Value = firstColHeader
+        ws.Range("B" & anchorRow).Value = periodText & " - Count"
+        ws.Range("C" & anchorRow).Value = periodText & " - Pass %"
+        ws.ListObjects.Add xlSrcRange, ws.Range("A" & anchorRow & ":C" & anchorRow), , xlYes
+        ws.ListObjects(ws.ListObjects.Count).Name = tblName
+        Set lo = ws.ListObjects(tblName)
+    Else
+        ' add two columns for new period
+        lo.ListColumns.Add
+        lo.HeaderRowRange.Cells(1, lo.ListColumns.Count - 1).Value = periodText & " - Count"
+        lo.ListColumns.Add
+        lo.HeaderRowRange.Cells(1, lo.ListColumns.Count).Value = periodText & " - Pass %"
+    End If
     
-    ws.Range("A5").Value = "Total Fail"
-    ws.Range("B5").Formula = "=COUNTIF(QA_Sam[Pass/Fail],""Fail"")"
+    colCount = lo.ListColumns.Count - 1
+    colPct = lo.ListColumns.Count
     
-    ws.Range("A6").Value = "Pass %"
-    ws.Range("B6").Formula = "=IF(B3=0,"""",B4/B3)"
-    ws.Range("B6").NumberFormat = "0.0%"
-    
-    ws.Range("A7").Value = "Fail %"
-    ws.Range("B7").Formula = "=IF(B3=0,"""",B5/B3)"
-    ws.Range("B7").NumberFormat = "0.0%"
-    
-    ws.Range("A3:A7").Font.Bold = True
-    
-    '========================================================
-    ' 3) Pivot cache
-    '========================================================
-    Set pvtCache = wb.PivotCaches.Create( _
-        SourceType:=xlDatabase, _
-        SourceData:=src.Range)
-    
-    '========================================================
-    ' 4) Overall Pass vs Fail (Donut)
-    '========================================================
-    nextRow = 10
-    ws.Range("A" & nextRow).Value = "Pass vs Fail (Overall)"
-    ws.Range("A" & nextRow).Font.Bold = True
-    
-    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
-        TableDestination:=ws.Range("A" & (nextRow + 1)), _
-        TableName:="pvtResultSplit")
-    
-    With pvt
-        .ClearAllFilters
-        .PivotFields("Pass/Fail").Orientation = xlRowField
-        .AddDataField .PivotFields("Pass/Fail"), "Count of Items", xlCount
-    End With
-    
-    Set rng = pvt.TableRange2
-    Set chartObj = ws.ChartObjects.Add(Left:=320, Top:=rng.Top, Width:=260, Height:=200)
-    With chartObj.Chart
-        .SetSourceData Source:=rng
-        .ChartType = xlDoughnut
-        .HasTitle = True
-        .ChartTitle.Text = "Pass vs Fail"
-    End With
-    
-    '========================================================
-    ' 5) Pass/Fail by Reviewer (Bar)
-    '========================================================
-    nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
-    ws.Range("A" & nextRow).Value = "Pass/Fail by Reviewer"
-    ws.Range("A" & nextRow).Font.Bold = True
-    
-    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
-        TableDestination:=ws.Range("A" & (nextRow + 1)), _
-        TableName:="pvtReviewer")
-    
-    With pvt
-        .ClearAllFilters
-        .PivotFields("Reviewer").Orientation = xlRowField
-        .PivotFields("Pass/Fail").Orientation = xlColumnField
-        
-        Dim dfRev As PivotField
-        Set dfRev = .AddDataField(.PivotFields("Pass/Fail"), "Count of Items", xlCount)
-        dfRev.NumberFormat = "0"
-        
-        Dim dfRevPct As PivotField
-        Set dfRevPct = .AddDataField(.PivotFields("Pass/Fail"), "% of Row", xlCount)
-        dfRevPct.Calculation = xlPercentOfRow
-        dfRevPct.NumberFormat = "0.0%"
-    End With
-    
-    Set rng = pvt.TableRange2
-    Set chartObj = ws.ChartObjects.Add(Left:=320, Top:=rng.Top, Width:=420, Height:=240)
-    With chartObj.Chart
-        .SetSourceData Source:=rng
-        .ChartType = xlColumnClustered
-        .HasTitle = True
-        .ChartTitle.Text = "Reviewer - Pass/Fail Split"
-    End With
-    
-    '========================================================
-    ' 6) Pass/Fail by Tickler Type (Bar)
-    '========================================================
-    nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
-    ws.Range("A" & nextRow).Value = "Pass/Fail by Tickler Type"
-    ws.Range("A" & nextRow).Font.Bold = True
-    
-    Set pvt = ws.PivotTables.Add(PivotCache:=pvtCache, _
-        TableDestination:=ws.Range("A" & (nextRow + 1)), _
-        TableName:="pvtTickler")
-    
-    With pvt
-        .ClearAllFilters
-        .PivotFields("Tickler Type").Orientation = xlRowField
-        .PivotFields("Pass/Fail").Orientation = xlColumnField
-        
-        Dim dfT As PivotField
-        Set dfT = .AddDataField(.PivotFields("Pass/Fail"), "Count of Items", xlCount)
-        dfT.NumberFormat = "0"
-        
-        Dim dfTPct As PivotField
-        Set dfTPct = .AddDataField(.PivotFields("Pass/Fail"), "% of Row", xlCount)
-        dfTPct.Calculation = xlPercentOfRow
-        dfTPct.NumberFormat = "0.0%"
-    End With
-    
-    Set rng = pvt.TableRange2
-    Set chartObj = ws.ChartObjects.Add(Left:=320, Top:=rng.Top, Width:=420, Height:=240)
-    With chartObj.Chart
-        .SetSourceData Source:=rng
-        .ChartType = xlColumnClustered
-        .HasTitle = True
-        .ChartTitle.Text = "Tickler Type - Pass/Fail Split"
-    End With
-    
-    '========================================================
-    ' 7) Incorrect Data Elements Count
-    '========================================================
-    nextRow = pvt.TableRange2.Row + pvt.TableRange2.Rows.Count + 3
-    ws.Range("A" & nextRow).Value = "Incorrect Data Elements Count"
-    ws.Range("A" & nextRow).Font.Bold = True
-    
-    Set dict = CreateObject("Scripting.Dictionary")
-    colIncorrect = src.ListColumns("Incorrect Data Elements").Index
-    
-    For Each cell In src.ListColumns(colIncorrect).DataBodyRange
-        If Trim(cell.Value) <> "" Then
-            dict(cell.Value) = dict(cell.Value) + 1
+    ' add missing keys
+    For Each key In dictAll.Keys
+        Set found = Nothing
+        On Error Resume Next
+        Set found = lo.ListColumns(1).DataBodyRange.Find(What:=key, LookAt:=xlWhole)
+        On Error GoTo 0
+        If found Is Nothing Then
+            lo.ListRows.Add AlwaysInsert:=True
+            lo.ListRows(lo.ListRows.Count).Range.Cells(1, 1).Value = key
         End If
-    Next cell
-    
-    rowOut = nextRow + 1
-    ws.Range("A" & rowOut).Value = "Incorrect Data Element"
-    ws.Range("B" & rowOut).Value = "Count"
-    ws.Range("A" & rowOut & ":B" & rowOut).Font.Bold = True
-    
-    For Each key In dict.keys
-        rowOut = rowOut + 1
-        ws.Range("A" & rowOut).Value = key
-        ws.Range("B" & rowOut).Value = dict(key)
     Next key
     
-    ws.Columns.AutoFit
-    
-    '========================================================
-    ' 8) Cleanup
-    '========================================================
-    Application.Calculation = xlCalculationAutomatic
-    Application.EnableEvents = True
-    Application.ScreenUpdating = True
-    
-    MsgBox "QA Dashboard built successfully in 'Reporting_Metrics'.", vbInformation
+    ' fill values
+    Dim rowCell As Range
+    For Each rowCell In lo.ListColumns(1).DataBodyRange
+        If dictAll.exists(rowCell.Value) Then
+            rowCell.Offset(0, colCount - 1).Value = dictAll(rowCell.Value)
+            If dictAll(rowCell.Value) > 0 Then
+                rowCell.Offset(0, colPct - 1).Value = dictPass(rowCell.Value) / dictAll(rowCell.Value)
+            End If
+            rowCell.Offset(0, colPct - 1).NumberFormat = "0.0%"
+        End If
+    Next rowCell
 End Sub
+
+'-----------------------------------------------------------
+' FIND COLUMN INDEX
+'-----------------------------------------------------------
+Private Function GetListColumnIndex(lo As ListObject, names As Variant) As Long
+    Dim lc As ListColumn, nm As Variant
+    For Each nm In names
+        For Each lc In lo.ListColumns
+            If StrComp(Trim(lc.Name), Trim(CStr(nm)), vbTextCompare) = 0 Then
+                GetListColumnIndex = lc.Index
+                Exit Function
+            End If
+        Next lc
+    Next nm
+    For Each nm In names
+        For Each lc In lo.ListColumns
+            If InStr(1, lc.Name, nm, vbTextCompare) > 0 Then
+                GetListColumnIndex = lc.Index
+                Exit Function
+            End If
+        Next lc
+    Next nm
+End Function
