@@ -5,8 +5,10 @@ Sub Update_QA_Metrics()
     Dim wsSrc As Worksheet, wsRep As Worksheet
     Dim loQA As ListObject
     Dim colComp As Long, colPF As Long, colTick As Long, colRev As Long, colCSA As Long
-    Dim i As Long, dt As Date, minDate As Date, maxDate As Date, haveDate As Boolean
+    Dim i As Long
+    Dim dt As Date, minDate As Date, maxDate As Date, haveDate As Boolean
     Dim periodText As String
+    
     Dim totalCount As Long, passCount As Long, failCount As Long
     Dim dictTick As Object, dictTickPass As Object
     Dim dictRev As Object, dictRevPass As Object
@@ -17,6 +19,7 @@ Sub Update_QA_Metrics()
     Set wsSrc = wb.Worksheets("QA Sample Set")
     Set loQA = wsSrc.ListObjects("QA_Sam")
     
+    ' Ensure Reporting_Metrics sheet
     On Error Resume Next
     Set wsRep = wb.Worksheets("Reporting_Metrics")
     On Error GoTo 0
@@ -27,7 +30,7 @@ Sub Update_QA_Metrics()
     
     Application.ScreenUpdating = False
     
-    '=== Identify required columns ===
+    '=== Identify columns ===
     colComp = GetListColumnIndex(loQA, Array("Completed Date"))
     colPF = GetListColumnIndex(loQA, Array("Pass/Fail"))
     colTick = GetListColumnIndex(loQA, Array("Tickler Type"))
@@ -39,7 +42,7 @@ Sub Update_QA_Metrics()
         GoTo Cleanup
     End If
     
-    '=== Determine QA period ===
+    '=== Determine period from Completed Date where Pass/Fail present ===
     For i = 1 To loQA.ListRows.Count
         If Trim(loQA.DataBodyRange.Cells(i, colPF).Value) <> "" And _
            IsDate(loQA.DataBodyRange.Cells(i, colComp).Value) Then
@@ -54,9 +57,11 @@ Sub Update_QA_Metrics()
     Next i
     
     If haveDate Then
+        ' Use month/year of minDate (your original intent)
         periodText = Format(minDate, "mmmm yyyy")
     Else
-        periodText = InputBox("Enter QA period (e.g. September 2025):", "QA Period")
+        periodText = InputBox("Couldn't detect period from 'Completed Date'." & vbCrLf & _
+                              "Enter period (e.g. September 2025):", "QA Period")
         If Trim(periodText) = "" Then GoTo Cleanup
     End If
     
@@ -101,33 +106,37 @@ Sub Update_QA_Metrics()
         End If
     Next i
     
-    '=== 1) Summary_Stats (Vertical) ===
+    '=== 1) Summary_Stats vertical at A7 ===
     Dim summaryLastRow As Long
     summaryLastRow = UpdateSummaryTable_Vertical(wsRep, periodText, totalCount, passCount, failCount, 7)
     
-    '=== Anchor next tables to the right ===
+    ' Get Summary_Stats table for anchor
     Dim loSummary As ListObject
     Set loSummary = wsRep.ListObjects("Summary_Stats")
-    Dim nextAnchorCol As Long
-    nextAnchorCol = loSummary.Range.Column + loSummary.Range.Columns.Count + 2
     
-    '=== 2) Tickler table ===
-    Dim ticklerEndCol As Long
-    ticklerEndCol = UpdateBreakdown_SideBySide(wsRep, "Tickler_Type_Metrics", "Tickler Type", _
-                                               periodText, dictTick, dictTickPass, loSummary.HeaderRowRange.Row, nextAnchorCol)
+    '=== 2) Tickler table to the right of Summary ===
+    Dim ticklerAnchorCol As Long, ticklerEndCol As Long
+    ticklerAnchorCol = loSummary.Range.Column + loSummary.Range.Columns.Count + 2
+    ticklerEndCol = UpdateBreakdown_SideBySide( _
+                        wsRep, "Tickler_Type_Metrics", "Tickler Type", _
+                        periodText, dictTick, dictTickPass, _
+                        loSummary.HeaderRowRange.Row, ticklerAnchorCol)
     
-    '=== 3) Reviewer table ===
-    Dim reviewerAnchorCol As Long
+    '=== 3) Reviewer table to the right of Tickler ===
+    Dim reviewerAnchorCol As Long, reviewerEndCol As Long
     reviewerAnchorCol = ticklerEndCol + 2
-    Dim reviewerEndCol As Long
-    reviewerEndCol = UpdateBreakdown_SideBySide(wsRep, "Reviewer_Metrics", "Reviewer", _
-                                                periodText, dictRev, dictRevPass, loSummary.HeaderRowRange.Row, reviewerAnchorCol)
+    reviewerEndCol = UpdateBreakdown_SideBySide( _
+                        wsRep, "Reviewer_Metrics", "Reviewer", _
+                        periodText, dictRev, dictRevPass, _
+                        loSummary.HeaderRowRange.Row, reviewerAnchorCol)
     
-    '=== 4) CSA table ===
+    '=== 4) CSA table to the right of Reviewer ===
     Dim csaAnchorCol As Long
     csaAnchorCol = reviewerEndCol + 2
-    Call UpdateBreakdown_SideBySide(wsRep, "Offshore_CSA_Metrics", "Offshore CSA (Completed by)", _
-                                    periodText, dictCSA, dictCSAPass, loSummary.HeaderRowRange.Row, csaAnchorCol)
+    Call UpdateBreakdown_SideBySide( _
+            wsRep, "Offshore_CSA_Metrics", "Offshore CSA (Completed by)", _
+            periodText, dictCSA, dictCSAPass, _
+            loSummary.HeaderRowRange.Row, csaAnchorCol)
     
     wsRep.Columns.AutoFit
     MsgBox "QA Metrics updated for: " & periodText, vbInformation
@@ -137,7 +146,7 @@ Cleanup:
 End Sub
 
 
-'==================== SUMMARY (VERTICAL, ROW PER PERIOD) ====================
+'==================== SUMMARY (VERTICAL: ONE ROW PER PERIOD) ====================
 
 Private Function UpdateSummaryTable_Vertical(ws As Worksheet, periodText As String, _
                                              totalCount As Long, passCount As Long, failCount As Long, _
@@ -146,6 +155,7 @@ Private Function UpdateSummaryTable_Vertical(ws As Worksheet, periodText As Stri
     Dim passPct As Double, failPct As Double
     Dim foundCell As Range
     Dim lastRow As Long
+    Dim hdrRng As Range, tblRng As Range
     
     passPct = IIf(totalCount > 0, passCount / totalCount, 0)
     failPct = IIf(totalCount > 0, failCount / totalCount, 0)
@@ -154,43 +164,55 @@ Private Function UpdateSummaryTable_Vertical(ws As Worksheet, periodText As Stri
     Set lo = ws.ListObjects("Summary_Stats")
     On Error GoTo 0
     
-    ' Create the table if missing
+    ' Create if missing
     If lo Is Nothing Then
-        ws.Range("A" & anchorRow).Resize(1, 6).Value = _
-            Array("Period", "Total QA Reviewed", "Passed", "Failed", "Pass %", "Fail %")
-        Set lo = ws.ListObjects.Add(xlSrcRange:=ws.Range("A" & anchorRow & ":F" & anchorRow), _
-                                    XlListObjectHasHeaders:=xlYes)
+        Set hdrRng = ws.Range("A" & anchorRow)
+        hdrRng.Resize(1, 6).Value = Array("Period", "Total QA Reviewed", "Passed", "Failed", "Pass %", "Fail %")
+        Set tblRng = ws.Range("A" & anchorRow & ":F" & anchorRow)
+        Set lo = ws.ListObjects.Add(xlSrcRange, tblRng, , xlYes)
         lo.Name = "Summary_Stats"
     End If
     
     ' Find existing period row
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    Set foundCell = Nothing
-    On Error Resume Next
-    Set foundCell = ws.Range("A" & (anchorRow + 1) & ":A" & lastRow).Find(What:=periodText, LookIn:=xlValues, LookAt:=xlWhole)
-    On Error GoTo 0
-    
-    ' If not found, append
-    If foundCell Is Nothing Then
-        lastRow = lastRow + 1
-        ws.Cells(lastRow, "A").Value = periodText
-        Set foundCell = ws.Cells(lastRow, "A")
+    lastRow = ws.Cells(ws.Rows.Count, lo.Range.Columns(1).Column).End(xlUp).Row
+    If lastRow < lo.HeaderRowRange.Row + 1 Then
+        ' No data rows yet
+        Set foundCell = Nothing
+    Else
+        Set foundCell = ws.Range( _
+            ws.Cells(lo.HeaderRowRange.Row + 1, lo.Range.Columns(1).Column), _
+            ws.Cells(lastRow, lo.Range.Columns(1).Column) _
+        ).Find(What:=periodText, LookIn:=xlValues, LookAt:=xlWhole)
     End If
     
-    ' Write data
+    ' If not found, append new row
+    If foundCell Is Nothing Then
+        lastRow = lastRow + 1
+        ws.Cells(lastRow, lo.Range.Columns(1).Column).Value = periodText
+        Set foundCell = ws.Cells(lastRow, lo.Range.Columns(1).Column)
+    End If
+    
+    ' Write values
     With ws
-        .Cells(foundCell.Row, "B").Value = totalCount
-        .Cells(foundCell.Row, "C").Value = passCount
-        .Cells(foundCell.Row, "D").Value = failCount
-        .Cells(foundCell.Row, "E").Value = passPct
-        .Cells(foundCell.Row, "F").Value = failPct
+        .Cells(foundCell.Row, lo.Range.Columns(1).Column + 1).Value = totalCount
+        .Cells(foundCell.Row, lo.Range.Columns(1).Column + 2).Value = passCount
+        .Cells(foundCell.Row, lo.Range.Columns(1).Column + 3).Value = failCount
+        .Cells(foundCell.Row, lo.Range.Columns(1).Column + 4).Value = passPct
+        .Cells(foundCell.Row, lo.Range.Columns(1).Column + 5).Value = failPct
     End With
     
-    ws.Range("B" & foundCell.Row & ":D" & foundCell.Row).NumberFormat = "0"
-    ws.Range("E" & foundCell.Row & ":F" & foundCell.Row).NumberFormat = "0%"
+    ' Format
+    ws.Range(ws.Cells(foundCell.Row, lo.Range.Columns(1).Column + 1), _
+             ws.Cells(foundCell.Row, lo.Range.Columns(1).Column + 3)).NumberFormat = "0"
+    ws.Range(ws.Cells(foundCell.Row, lo.Range.Columns(1).Column + 4), _
+             ws.Cells(foundCell.Row, lo.Range.Columns(1).Column + 5)).NumberFormat = "0%"
     
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    lo.Resize ws.Range("A" & anchorRow & ":F" & lastRow)
+    ' Resize table to include all used rows in this block
+    lastRow = ws.Cells(ws.Rows.Count, lo.Range.Columns(1).Column).End(xlUp).Row
+    Set tblRng = ws.Range( _
+        ws.Cells(lo.HeaderRowRange.Row, lo.Range.Columns(1).Column), _
+        ws.Cells(lastRow, lo.Range.Columns(1).Column + 5))
+    lo.Resize tblRng
     
     UpdateSummaryTable_Vertical = lastRow
 End Function
@@ -201,70 +223,98 @@ End Function
 Private Function UpdateBreakdown_SideBySide(ws As Worksheet, tblName As String, firstColHeader As String, _
                                             periodText As String, dictAll As Object, dictPass As Object, _
                                             anchorRow As Long, anchorCol As Long) As Long
-    Dim lo As ListObject, colCount As Long, colPct As Long
-    Dim key As Variant, body As Range, rCell As Range
-    Dim hdrCell As Range, lastCol As Long
+    Dim lo As ListObject
+    Dim hdrCell As Range, tblRng As Range
+    Dim colCount As Long, colPct As Long
+    Dim key As Variant
+    Dim body As Range
+    Dim rowIndex As Variant
+    Dim lastCol As Long
     
     On Error Resume Next
     Set lo = ws.ListObjects(tblName)
     On Error GoTo 0
     
-    ' Create new table if missing
+    ' Create if missing
     If lo Is Nothing Then
         Set hdrCell = ws.Cells(anchorRow, anchorCol)
         hdrCell.Value = firstColHeader
         hdrCell.Offset(0, 1).Value = periodText & " - Count"
         hdrCell.Offset(0, 2).Value = periodText & " - Pass %"
-        Set lo = ws.ListObjects.Add(xlSrcRange:=ws.Range(hdrCell, hdrCell.Offset(0, 2)), _
-                                    XlListObjectHasHeaders:=xlYes)
+        Set tblRng = ws.Range(hdrCell, hdrCell.Offset(0, 2))
+        Set lo = ws.ListObjects.Add(xlSrcRange, tblRng, , xlYes)
         lo.Name = tblName
     End If
     
-    ' Ensure columns for period
+    ' Ensure period columns
     colCount = FindHeaderColumn(lo, periodText & " - Count")
-    colPct = FindHeaderColumn(lo, periodText & " - Pass %")
     If colCount = 0 Then
         lo.ListColumns.Add
         lo.HeaderRowRange.Cells(1, lo.ListColumns.Count).Value = periodText & " - Count"
         colCount = lo.ListColumns.Count
     End If
+    
+    colPct = FindHeaderColumn(lo, periodText & " - Pass %")
     If colPct = 0 Then
         lo.ListColumns.Add
         lo.HeaderRowRange.Cells(1, lo.ListColumns.Count).Value = periodText & " - Pass %"
         colPct = lo.ListColumns.Count
     End If
     
-    ' Ensure all keys as rows
-    On Error Resume Next
-    Set body = lo.ListColumns(1).DataBodyRange
-    On Error GoTo 0
+    ' Ensure rows for all keys
+    If lo.ListRows.Count > 0 Then
+        Set body = lo.ListColumns(1).DataBodyRange
+    Else
+        Set body = Nothing
+    End If
+    
     For Each key In dictAll.Keys
-        If body Is Nothing Or IsError(Application.Match(key, body, 0)) Then
+        If body Is Nothing Then
             lo.ListRows.Add
-            On Error Resume Next
             Set body = lo.ListColumns(1).DataBodyRange
-            On Error GoTo 0
             body.Cells(body.Rows.Count, 1).Value = key
+        Else
+            rowIndex = Application.Match(CStr(key), body, 0)
+            If IsError(rowIndex) Then
+                lo.ListRows.Add
+                Set body = lo.ListColumns(1).DataBodyRange
+                body.Cells(body.Rows.Count, 1).Value = key
+            End If
         End If
     Next key
     
-    ' Fill data
-    If Not body Is Nothing Then
-        For Each rCell In body.Cells
-            key = CStr(rCell.Value)
-            If dictAll.exists(key) Then
-                Dim total As Long, passed As Long, pct As Double
-                total = dictAll(key)
-                passed = IIf(dictPass.exists(key), dictPass(key), 0)
-                pct = IIf(total > 0, passed / total, 0)
-                rCell.Offset(0, colCount - 1).Value = total
-                rCell.Offset(0, colPct - 1).Value = pct
-            End If
-        Next rCell
+    ' Refresh body after potential adds
+    If lo.ListRows.Count > 0 Then
+        Set body = lo.ListColumns(1).DataBodyRange
+    Else
+        Set body = Nothing
     End If
     
-    lo.ListColumns(colCount).DataBodyRange.NumberFormat = "0"
-    lo.ListColumns(colPct).DataBodyRange.NumberFormat = "0%"
+    ' Fill data for this period
+    If Not body Is Nothing Then
+        For Each key In dictAll.Keys
+            rowIndex = Application.Match(CStr(key), body, 0)
+            If Not IsError(rowIndex) Then
+                Dim total As Long, passed As Long, pct As Double
+                total = dictAll(key)
+                If dictPass.exists(key) Then
+                    passed = dictPass(key)
+                Else
+                    passed = 0
+                End If
+                If total > 0 Then pct = passed / total Else pct = 0
+                
+                body.Cells(rowIndex, colCount - 1).Value = total
+                body.Cells(rowIndex, colPct - 1).Value = pct
+            End If
+        Next key
+    End If
+    
+    ' Format
+    If lo.ListRows.Count > 0 Then
+        lo.ListColumns(colCount).DataBodyRange.NumberFormat = "0"
+        lo.ListColumns(colPct).DataBodyRange.NumberFormat = "0%"
+    End If
     
     lastCol = lo.Range.Column + lo.Range.Columns.Count - 1
     UpdateBreakdown_SideBySide = lastCol
