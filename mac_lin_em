@@ -124,7 +124,7 @@ Sub Send_QA_Emails_Grouped()
                 Criteria1:=">=" & CLng(startDate), Operator:=xlAnd, _
                 Criteria2:="<=" & CLng(endDate)
         End If
-        ' Include header
+        
         loQA.Range.Rows(1).Copy wsTemp.Range("A1")
         On Error Resume Next
         loQA.DataBodyRange.SpecialCells(xlCellTypeVisible).Copy
@@ -162,7 +162,7 @@ Sub Send_QA_Emails_Grouped()
             If reviewerEmail <> "" Then .CC = reviewerEmail
             .Subject = subj
             .HTMLBody = bodyHTML
-            '.Display   'For testing
+            '.Display   'uncomment for preview
             .Send
         End With
 NextKey:
@@ -178,6 +178,7 @@ NextKey:
     Application.ScreenUpdating = True
     MsgBox "Grouped QA emails sent for " & periodText, vbInformation
 End Sub
+
 
 '=========== PRE-RUN CHECK: Ensure all emails exist ===========
 Private Function ValidateEmails(loQA As ListObject, loKeys As ListObject, colReviewer As Long, colCSA As Long) As Boolean
@@ -218,25 +219,29 @@ Private Function ValidateEmails(loQA As ListObject, loKeys As ListObject, colRev
             loKeys.DataBodyRange.Cells(lr + 1, 1).Value = nmMiss
             lr = lr + 1
         Next nmMiss
-        MsgBox "New names added to Keys!Em_add: please fill email addresses and rerun the macro.", vbExclamation
+        MsgBox "New names added to Keys!Em_add. Please fill their email addresses and rerun the macro.", vbExclamation
         ValidateEmails = False
         Exit Function
     End If
     ValidateEmails = True
 End Function
 
-'=========== BUILD HTML TABLE (with headers) ===========
+
+'=========== BUILD HTML TABLE (auto-fit, safe text, date formatting) ===========
 Private Function BuildHTMLTable(rng As Range) As String
     Dim r As Long, c As Long, s As String
-    Dim rows As Long, cols As Long, cellVal As String
+    Dim rows As Long, cols As Long, cellVal As String, hdr As String
+    
     rows = rng.Rows.Count
     cols = rng.Columns.Count
     
-    s = "<table border='1' cellspacing='0' cellpadding='4' style='border-collapse:collapse;font-family:Calibri;font-size:11pt;'>"
+    s = "<table border='1' cellspacing='0' cellpadding='4' " & _
+        "style='border-collapse:collapse;font-family:Calibri;font-size:11pt;width:auto;'>"
     ' Header row
     s = s & "<tr style='background-color:#4472C4;color:white;'>"
     For c = 1 To cols
-        s = s & "<th>" & rng.Cells(1, c).Value & "</th>"
+        hdr = rng.Cells(1, c).Value
+        s = s & "<th style='white-space:nowrap;text-align:left;padding:4px;'>" & hdr & "</th>"
     Next c
     s = s & "</tr>"
     
@@ -248,14 +253,30 @@ Private Function BuildHTMLTable(rng As Range) As String
             s = s & "<tr>"
         End If
         For c = 1 To cols
-            cellVal = rng.Cells(r, c).Text
-            s = s & "<td>" & cellVal & "</td>"
+            Dim colName As String
+            colName = Trim(CStr(rng.Cells(1, c).Value))
+            cellVal = rng.Cells(r, c).Value
+            
+            ' Prevent scientific notation
+            If IsNumeric(cellVal) And Len(CStr(cellVal)) > 8 Then
+                cellVal = "'" & CStr(cellVal)
+            End If
+            
+            ' Format date columns
+            If InStr(1, LCase(colName), "completed date") > 0 _
+                Or InStr(1, LCase(colName), "date reviewed") > 0 Then
+                If IsDate(cellVal) Then cellVal = Format(CDate(cellVal), "dd-mmm-yyyy")
+            End If
+            
+            s = s & "<td style='white-space:nowrap;text-align:left;padding:4px;'>" & cellVal & "</td>"
         Next c
         s = s & "</tr>"
     Next r
+    
     s = s & "</table>"
     BuildHTMLTable = s
 End Function
+
 
 '=========== HELPER FUNCTIONS ===========
 Private Function GetEmailFromName(lo As ListObject, personName As String) As String
