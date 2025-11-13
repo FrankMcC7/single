@@ -64,9 +64,78 @@ def get_mailbox_root(ns, mailbox_name: str):
         )
 
 
-def save_mail_as_msg(mail_item, dir_path: str):
-    """Save a MailItem as .msg in the given directory."""
-    ensure_dir(dir_path)
+# ---- NEW: period parsing helpers ----
+
+MONTH_MAP = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+
+
+def get_period_folder(base_dir: str, subject: str) -> str:
+    """
+    From subject text, detect 'Month YYYY' (e.g. 'October 2025') and return
+    a folder path: base_dir\YYYY\MM-MonthName
+
+    If pattern not found, returns base_dir\_UnknownPeriod
+    """
+    if subject is None:
+        subject = ""
+
+    pattern = r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b"
+    m = re.search(pattern, subject, flags=re.IGNORECASE)
+
+    if not m:
+        # Fallback for unmapped subjects
+        unknown_dir = os.path.join(base_dir, "_UnknownPeriod")
+        ensure_dir(unknown_dir)
+        return unknown_dir
+
+    month_name_raw = m.group(1)
+    year = m.group(2)
+
+    month_key = month_name_raw.lower()
+    month_num = MONTH_MAP.get(month_key)
+
+    if not month_num:
+        # Shouldn't really happen, but safe fallback
+        unknown_dir = os.path.join(base_dir, "_UnknownPeriod")
+        ensure_dir(unknown_dir)
+        return unknown_dir
+
+    # Normalise month name to capitalised format (e.g. October)
+    month_name = month_key.capitalize()
+
+    year_dir = os.path.join(base_dir, year)
+    month_dir_name = f"{month_num:02d}-{month_name}"
+    month_dir = os.path.join(year_dir, month_dir_name)
+
+    ensure_dir(month_dir)
+    return month_dir
+
+
+def save_mail_as_msg(mail_item, base_save_root: str):
+    """
+    Save a MailItem as .msg inside a Year\MM-Month folder determined from subject.
+
+    Example:
+        Subject: "Invoice - October 2025"
+        base_save_root: R:\EmailArchive
+        → R:\EmailArchive\2025\10-October\YYYYMMDD_HHMMSS_Subject.msg
+
+    If month/year not found in subject, saves under base_save_root\_UnknownPeriod
+    """
+    target_dir = get_period_folder(base_save_root, mail_item.Subject)
 
     dt = mail_item.SentOn or mail_item.ReceivedTime
     if isinstance(dt, datetime):
@@ -77,7 +146,7 @@ def save_mail_as_msg(mail_item, dir_path: str):
     subject_part = sanitize_filename(mail_item.Subject or "No subject")
     filename = f"{ts}_{subject_part}.msg"
 
-    full_path = os.path.join(dir_path, filename)
+    full_path = os.path.join(target_dir, filename)
     mail_item.SaveAs(full_path, constants.olMSG)
 
 
@@ -162,13 +231,12 @@ def process_rule(ns, rule: dict) -> int:
     print(f"  Source: {source_mailbox}\\{'\\'.join(source_folder_parts)}")
     print(f"  Filter: Sender = {sender_email}")
     print(f"  Target: {target_mailbox}\\{'\\'.join(target_folder_parts)}")
-    print(f"  Save to: {save_root}")
+    print(f"  Save base path: {save_root}")
 
     # Build cutoff = today at 00:00, local time
     now = datetime.now()
     today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
-    # Outlook Restrict wants US-style date string
-    cutoff_str = today_start.strftime("%m/%d/%Y %I:%M %p")
+    cutoff_str = today_start.strftime("%m/%d/%Y %I:%M %p")  # Outlook format
 
     try:
         src_root = get_mailbox_root(ns, source_mailbox)
@@ -180,7 +248,6 @@ def process_rule(ns, rule: dict) -> int:
         print(f"  ✖ ERROR locating folders: {e}")
         return 0
 
-    # Restrict: correct sender AND received before today
     restriction = (
         f"[SenderEmailAddress] = '{sender_email}' "
         f"AND [ReceivedTime] < '{cutoff_str}'"
@@ -198,9 +265,6 @@ def process_rule(ns, rule: dict) -> int:
 
     moved_count = 0
 
-    rule_save_dir = os.path.join(save_root, sanitize_filename(rule_name))
-    ensure_dir(rule_save_dir)
-
     # Snapshot items into a Python list so moving them doesn't break indexing
     items_list = [filtered_items[i] for i in range(1, filtered_items.Count + 1)]
 
@@ -215,9 +279,10 @@ def process_rule(ns, rule: dict) -> int:
             moved.UnRead = True
             moved.Save()
 
-            save_mail_as_msg(moved, rule_save_dir)
+            # Save based on period in subject
+            save_mail_as_msg(moved, save_root)
 
-            print(f"   ✔ Moved: {subject_display}")
+            print(f"   ✔ Moved & saved: {subject_display}")
             moved_count += 1
 
         except Exception as e:
