@@ -310,11 +310,15 @@ def check_outlook_connection(ns, rule: dict,
 
 
 def process_rule(ns, rule: dict) -> int:
-    """Process one rule; return number of moved emails (excluding today)."""
+    """
+    Process one rule; return number of moved emails (excluding today).
+    Now filters in Python instead of using Items.Restrict.
+    Also “opens” each mail (reads Subject + Body) before moving.
+    """
     rule_name = rule["rule_name"]
     source_mailbox = rule["source_mailbox"]
     source_folder_parts = rule["source_folder_parts"]
-    sender_email = rule["sender_email"]
+    sender_email = rule["sender_email"].lower()
     target_mailbox = rule["target_mailbox"]
     target_folder_parts = rule["target_folder_parts"]
     save_root = rule["save_root"]
@@ -328,7 +332,6 @@ def process_rule(ns, rule: dict) -> int:
     # Build cutoff = today at 00:00, local time
     now = datetime.now()
     today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
-    cutoff_str = today_start.strftime("%m/%d/%Y %I:%M %p")  # Outlook format
 
     try:
         src_root = get_mailbox_root(ns, source_mailbox)
@@ -340,34 +343,51 @@ def process_rule(ns, rule: dict) -> int:
         logging.error(f"  ✖ ERROR locating folders: {e}")
         return 0
 
-    restriction = (
-        f"[SenderEmailAddress] = '{sender_email}' "
-        f"AND [ReceivedTime] < '{cutoff_str}'"
-    )
-
+    # Snapshot items into a Python list (no live COM indexing)
     try:
-        filtered_items = src_folder.Items.Restrict(restriction)
+        src_items = src_folder.Items
+        items_list = [item for item in src_items]
     except Exception as e:
-        logging.error(f"  ✖ ERROR applying Restrict filter: {e}")
-        logging.error(f"  Restriction used: {restriction}")
+        logging.error(f"  ✖ ERROR reading items from source folder: {e}")
         return 0
 
-    count = filtered_items.Count
-    logging.info(f"  → Found {count} matching email(s) (up to yesterday)")
-
-    if count == 0:
-        logging.info("  → Nothing to move for this rule.")
-        return 0
+    logging.info(f"  → Source folder contains {len(items_list)} item(s) in total")
 
     moved_count = 0
-
-    # Snapshot items into a Python list WITHOUT numeric indexing
-    items_list = [item for item in filtered_items]
+    scanned_count = 0
 
     for item in items_list:
         if item is None:
             continue
         if getattr(item, "Class", None) != OL_MAILITEM_CLASS:
+            continue
+
+        scanned_count += 1
+
+        try:
+            item_sender = (getattr(item, "SenderEmailAddress", "") or "").lower()
+            received_time = getattr(item, "ReceivedTime", None)
+        except Exception as e:
+            logging.warning(f"   ✖ ERROR reading basic properties on item: {e}")
+            continue
+
+        # Filter by sender
+        if item_sender != sender_email:
+            continue
+
+        # Filter by date (exclude today)
+        if not isinstance(received_time, datetime):
+            # If weird type, skip to be safe
+            continue
+        if received_time >= today_start:
+            continue
+
+        # Force-load the item by accessing Subject and Body
+        try:
+            _ = item.Subject
+            _ = item.Body
+        except Exception as e:
+            logging.warning(f"   ✖ ERROR loading item body/subject: {e}")
             continue
 
         subject_display = sanitize_filename(getattr(item, "Subject", "") or "No subject")
@@ -386,7 +406,10 @@ def process_rule(ns, rule: dict) -> int:
         except Exception as e:
             logging.error(f"   ✖ ERROR moving/saving '{subject_display}': {e}")
 
-    logging.info(f"  → Completed. Moved {moved_count} email(s).")
+    logging.info(
+        f"  → Scanned {scanned_count} mail item(s) in source folder, "
+        f"moved {moved_count} matching item(s)."
+    )
     return moved_count
 
 
