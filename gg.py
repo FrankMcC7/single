@@ -16,6 +16,9 @@ CONFIG_SHEET = "Rules"
 # Optional: Outlook profile name. Usually leave as None.
 OUTLOOK_PROFILE = None
 
+# Outlook MailItem class numeric value (safer than constants.olMail)
+OL_MAILITEM_CLASS = 43
+
 
 # ========= HELPER FUNCTIONS =========
 
@@ -269,14 +272,17 @@ def process_rule(ns, rule: dict) -> int:
 
     moved_count = 0
 
-    # Snapshot items into a Python list WITHOUT indexing into COM by number
+    # Snapshot items into a Python list WITHOUT numeric indexing
     items_list = [item for item in filtered_items]
 
     for item in items_list:
-        if item.Class != constants.olMail:
+        # Some COM items can be None or non-mail; be defensive
+        if item is None:
+            continue
+        if getattr(item, "Class", None) != OL_MAILITEM_CLASS:
             continue
 
-        subject_display = sanitize_filename(item.Subject or "No subject")
+        subject_display = sanitize_filename(getattr(item, "Subject", "") or "No subject")
 
         try:
             moved = item.Move(tgt_folder)
