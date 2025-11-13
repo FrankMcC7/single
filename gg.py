@@ -9,9 +9,11 @@ import win32com.client as win32
 from win32com.client import constants
 
 
-# ========= CONFIG: EDIT THESE =========
+# ========= CONFIG =========
 
 # Path to Excel file containing rules
+# Columns required on sheet: Enabled, RuleName, SourceMailbox, SourceFolderPath,
+# SenderEmail, TargetMailbox, TargetFolderPath, SaveRoot
 CONFIG_FILE = r"R:\Config\email_move_rules.xlsx"
 CONFIG_SHEET = "Rules"
 
@@ -48,7 +50,7 @@ def setup_logging() -> str:
     return log_path
 
 
-# ========= HELPER FUNCTIONS =========
+# ========= GENERIC HELPERS =========
 
 def sanitize_filename(text: str) -> str:
     """Make a safe filename/folder name."""
@@ -96,7 +98,7 @@ def get_mailbox_root(ns, mailbox_name: str):
         )
 
 
-# ---- Period parsing helpers ----
+# ========= PERIOD PARSING / SAVE PATH HELPERS =========
 
 MONTH_MAP = {
     "january": 1,
@@ -181,6 +183,8 @@ def save_mail_as_msg(mail_item, base_save_root: str):
     full_path = os.path.join(target_dir, filename)
     mail_item.SaveAs(full_path, constants.olMSG)
 
+
+# ========= RULE LOADING / OUTLOOK SYNC / CONNECTION CHECK =========
 
 def load_rules_from_excel():
     """Load enabled rules from Excel into a list of dicts."""
@@ -309,11 +313,20 @@ def check_outlook_connection(ns, rule: dict,
     return False
 
 
+# ========= CORE RULE PROCESSING =========
+
 def process_rule(ns, rule: dict) -> int:
     """
     Process one rule; return number of moved emails (excluding today).
-    Now filters in Python instead of using Items.Restrict.
-    Also “opens” each mail (reads Subject + Body) before moving.
+
+    Logic:
+      - Enumerate all items in source folder
+      - Keep only MailItems
+      - Filter by SenderEmailAddress (case-insensitive)
+      - Filter by ReceivedTime < today 00:00
+      - Force-load Subject/Body (so mail is fully loaded)
+      - Move to target folder, keep UnRead=True
+      - Save .msg in SaveRoot\YYYY\MM-Month based on "Month YYYY" in subject
     """
     rule_name = rule["rule_name"]
     source_mailbox = rule["source_mailbox"]
@@ -329,9 +342,9 @@ def process_rule(ns, rule: dict) -> int:
     logging.info(f"  Target: {target_mailbox}\\{'\\'.join(target_folder_parts)}")
     logging.info(f"  Save base path: {save_root}")
 
-    # Build cutoff = today at 00:00, local time
+    # Cutoff = today at 00:00 (naive datetime)
     now = datetime.now()
-    today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         src_root = get_mailbox_root(ns, source_mailbox)
@@ -364,6 +377,7 @@ def process_rule(ns, rule: dict) -> int:
 
         scanned_count += 1
 
+        # --- read sender + ReceivedTime safely ---
         try:
             item_sender = (getattr(item, "SenderEmailAddress", "") or "").lower()
             received_time = getattr(item, "ReceivedTime", None)
@@ -377,12 +391,17 @@ def process_rule(ns, rule: dict) -> int:
 
         # Filter by date (exclude today)
         if not isinstance(received_time, datetime):
-            # If weird type, skip to be safe
-            continue
-        if received_time >= today_start:
             continue
 
-        # Force-load the item by accessing Subject and Body
+        rec_dt = received_time
+        if getattr(rec_dt, "tzinfo", None) is not None:
+            rec_dt = rec_dt.replace(tzinfo=None)
+
+        if rec_dt >= today_start:
+            # mail from today or later → skip
+            continue
+
+        # Force-load the item by accessing Subject and Body (makes sure it's fully cached)
         try:
             _ = item.Subject
             _ = item.Body
@@ -397,7 +416,6 @@ def process_rule(ns, rule: dict) -> int:
             moved.UnRead = True
             moved.Save()
 
-            # Save based on period in subject
             save_mail_as_msg(moved, save_root)
 
             logging.info(f"   ✔ Moved & saved: {subject_display}")
