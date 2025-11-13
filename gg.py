@@ -45,6 +45,7 @@ def get_outlook_namespace():
 
 
 def get_folder(root_folder, path_parts):
+    """Walk down a folder path like ['Inbox', 'Subfolder']."""
     folder = root_folder
     for part in path_parts:
         if not part:
@@ -54,6 +55,7 @@ def get_folder(root_folder, path_parts):
 
 
 def get_mailbox_root(ns, mailbox_name: str):
+    """Return the root folder of a mailbox by display name."""
     try:
         return ns.Folders[mailbox_name]
     except Exception:
@@ -63,6 +65,7 @@ def get_mailbox_root(ns, mailbox_name: str):
 
 
 def save_mail_as_msg(mail_item, dir_path: str):
+    """Save a MailItem as .msg in the given directory."""
     ensure_dir(dir_path)
 
     dt = mail_item.SentOn or mail_item.ReceivedTime
@@ -79,6 +82,7 @@ def save_mail_as_msg(mail_item, dir_path: str):
 
 
 def load_rules_from_excel():
+    """Load enabled rules from Excel into a list of dicts."""
     if not os.path.exists(CONFIG_FILE):
         raise FileNotFoundError(f"Config file not found: {CONFIG_FILE}")
 
@@ -125,6 +129,10 @@ def load_rules_from_excel():
             p.strip() for p in target_folder_path_raw.split("\\") if p.strip()
         ]
 
+        if not source_mailbox or not source_folder_parts or not sender_email:
+            print(f"Skipping rule '{rule_name}' — missing required fields.")
+            continue
+
         rules.append(
             {
                 "rule_name": rule_name,
@@ -141,6 +149,7 @@ def load_rules_from_excel():
 
 
 def process_rule(ns, rule: dict) -> int:
+    """Process one rule; return number of moved emails (excluding today)."""
     rule_name = rule["rule_name"]
     source_mailbox = rule["source_mailbox"]
     source_folder_parts = rule["source_folder_parts"]
@@ -155,6 +164,12 @@ def process_rule(ns, rule: dict) -> int:
     print(f"  Target: {target_mailbox}\\{'\\'.join(target_folder_parts)}")
     print(f"  Save to: {save_root}")
 
+    # Build cutoff = today at 00:00, local time
+    now = datetime.now()
+    today_start = datetime(now.year, now.month, now.day, 0, 0, 0)
+    # Outlook Restrict wants US-style date string
+    cutoff_str = today_start.strftime("%m/%d/%Y %I:%M %p")
+
     try:
         src_root = get_mailbox_root(ns, source_mailbox)
         src_folder = get_folder(src_root, source_folder_parts)
@@ -165,24 +180,31 @@ def process_rule(ns, rule: dict) -> int:
         print(f"  ✖ ERROR locating folders: {e}")
         return 0
 
+    # Restrict: correct sender AND received before today
+    restriction = (
+        f"[SenderEmailAddress] = '{sender_email}' "
+        f"AND [ReceivedTime] < '{cutoff_str}'"
+    )
+
     try:
-        filtered_items = src_folder.Items.Restrict(
-            f"[SenderEmailAddress] = '{sender_email}'"
-        )
+        filtered_items = src_folder.Items.Restrict(restriction)
     except Exception as e:
         print(f"  ✖ ERROR applying Restrict filter: {e}")
+        print(f"  Restriction used: {restriction}")
         return 0
 
     count = filtered_items.Count
-    print(f"  → Found {count} matching email(s)")
+    print(f"  → Found {count} matching email(s) (up to yesterday)")
 
     moved_count = 0
 
     rule_save_dir = os.path.join(save_root, sanitize_filename(rule_name))
     ensure_dir(rule_save_dir)
 
-    for i in range(count, 0, -1):
-        item = filtered_items[i]
+    # Snapshot items into a Python list so moving them doesn't break indexing
+    items_list = [filtered_items[i] for i in range(1, filtered_items.Count + 1)]
+
+    for item in items_list:
         if item.Class != constants.olMail:
             continue
 
@@ -212,7 +234,7 @@ def main():
     rules = load_rules_from_excel()
 
     if not rules:
-        print("No enabled rules found or all rules missing SaveRoot.")
+        print("No enabled rules found or all rules invalid.")
         return
 
     print(f"Loaded {len(rules)} enabled rule(s).\n")
@@ -224,7 +246,7 @@ def main():
         moved = process_rule(ns, rule)
         total_moved += moved
 
-    print(f"\nDone. Total moved emails across all rules: {total_moved}")
+    print(f"\nDone. Total moved emails across all rules (excluding today): {total_moved}")
 
 
 if __name__ == "__main__":
