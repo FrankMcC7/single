@@ -64,7 +64,7 @@ def get_mailbox_root(ns, mailbox_name: str):
         )
 
 
-# ---- NEW: period parsing helpers ----
+# ---- Period parsing helpers ----
 
 MONTH_MAP = {
     "january": 1,
@@ -92,11 +92,14 @@ def get_period_folder(base_dir: str, subject: str) -> str:
     if subject is None:
         subject = ""
 
-    pattern = r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b"
+    pattern = (
+        r"\b("
+        r"January|February|March|April|May|June|July|August|September|October|November|December"
+        r")\s+(\d{4})\b"
+    )
     m = re.search(pattern, subject, flags=re.IGNORECASE)
 
     if not m:
-        # Fallback for unmapped subjects
         unknown_dir = os.path.join(base_dir, "_UnknownPeriod")
         ensure_dir(unknown_dir)
         return unknown_dir
@@ -108,14 +111,11 @@ def get_period_folder(base_dir: str, subject: str) -> str:
     month_num = MONTH_MAP.get(month_key)
 
     if not month_num:
-        # Shouldn't really happen, but safe fallback
         unknown_dir = os.path.join(base_dir, "_UnknownPeriod")
         ensure_dir(unknown_dir)
         return unknown_dir
 
-    # Normalise month name to capitalised format (e.g. October)
     month_name = month_key.capitalize()
-
     year_dir = os.path.join(base_dir, year)
     month_dir_name = f"{month_num:02d}-{month_name}"
     month_dir = os.path.join(year_dir, month_dir_name)
@@ -263,10 +263,14 @@ def process_rule(ns, rule: dict) -> int:
     count = filtered_items.Count
     print(f"  → Found {count} matching email(s) (up to yesterday)")
 
+    if count == 0:
+        print("  → Nothing to move for this rule.")
+        return 0
+
     moved_count = 0
 
-    # Snapshot items into a Python list so moving them doesn't break indexing
-    items_list = [filtered_items[i] for i in range(1, filtered_items.Count + 1)]
+    # Snapshot items into a Python list WITHOUT indexing into COM by number
+    items_list = [item for item in filtered_items]
 
     for item in items_list:
         if item.Class != constants.olMail:
