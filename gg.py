@@ -9,11 +9,9 @@ import win32com.client as win32
 from win32com.client import constants
 
 
-# ========= CONFIG =========
+# ========= CONFIG: EDIT THESE =========
 
 # Path to Excel file containing rules
-# Columns required on sheet: Enabled, RuleName, SourceMailbox, SourceFolderPath,
-# SenderEmail, TargetMailbox, TargetFolderPath, SaveRoot
 CONFIG_FILE = r"R:\Config\email_move_rules.xlsx"
 CONFIG_SHEET = "Rules"
 
@@ -26,14 +24,14 @@ OUTLOOK_PROFILE = None
 # Outlook MailItem class numeric value (MailItem = 43)
 OL_MAILITEM_CLASS = 43
 
+# Max allowed full path length when saving .msg (safety below Windows 260)
+MAX_PATH_LEN = 225
+
 
 # ========= LOGGING SETUP =========
 
 def setup_logging() -> str:
-    """
-    Configure logging to write both to console and to a per-run log file.
-    Returns the log file path.
-    """
+    """Configure logging to file + console. Return log file path."""
     os.makedirs(LOG_DIR, exist_ok=True)
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = os.path.join(LOG_DIR, f"email_move_{run_ts}.log")
@@ -50,7 +48,7 @@ def setup_logging() -> str:
     return log_path
 
 
-# ========= GENERIC HELPERS =========
+# ========= HELPER FUNCTIONS =========
 
 def sanitize_filename(text: str) -> str:
     """Make a safe filename/folder name."""
@@ -98,7 +96,7 @@ def get_mailbox_root(ns, mailbox_name: str):
         )
 
 
-# ========= PERIOD PARSING / SAVE PATH HELPERS =========
+# ---- Period parsing helpers ----
 
 MONTH_MAP = {
     "january": 1,
@@ -162,12 +160,8 @@ def save_mail_as_msg(mail_item, base_save_root: str):
     """
     Save a MailItem as .msg inside a Year\MM-Month folder determined from subject.
 
-    Example:
-        Subject: "Invoice - October 2025"
-        base_save_root: R:\EmailArchive
-        → R:\EmailArchive\2025\10-October\YYYYMMDD_HHMMSS_Subject.msg
-
-    If month/year not found in subject, saves under base_save_root\_UnknownPeriod
+    Enforce that the full path length is <= MAX_PATH_LEN by truncating the
+    subject portion of the filename if needed.
     """
     target_dir = get_period_folder(base_save_root, mail_item.Subject)
 
@@ -178,13 +172,34 @@ def save_mail_as_msg(mail_item, base_save_root: str):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     subject_part = sanitize_filename(mail_item.Subject or "No subject")
-    filename = f"{ts}_{subject_part}.msg"
 
+    # Compute max allowed subject length based on target_dir + timestamp
+    # full_path = target_dir\ts_subject.msg
+    base_prefix = os.path.join(target_dir, "")  # includes separator at end
+    fixed_len = len(ts) + 1 + 4  # timestamp + "_" + ".msg"
+
+    max_subject_len = MAX_PATH_LEN - len(base_prefix) - fixed_len
+    if max_subject_len < 10:
+        max_subject_len = 10  # safety minimum
+
+    if len(subject_part) > max_subject_len:
+        subject_part = subject_part[:max_subject_len].rstrip()
+
+    filename = f"{ts}_{subject_part}.msg"
     full_path = os.path.join(target_dir, filename)
+
+    # Extra safety: if still too long, truncate further
+    if len(full_path) > MAX_PATH_LEN:
+        excess = len(full_path) - MAX_PATH_LEN
+        if excess >= len(subject_part):
+            subject_part = "trunc"
+        else:
+            subject_part = subject_part[:-excess]
+        filename = f"{ts}_{subject_part}.msg"
+        full_path = os.path.join(target_dir, filename)
+
     mail_item.SaveAs(full_path, constants.olMSG)
 
-
-# ========= RULE LOADING / OUTLOOK SYNC / CONNECTION CHECK =========
 
 def load_rules_from_excel():
     """Load enabled rules from Excel into a list of dicts."""
@@ -313,20 +328,13 @@ def check_outlook_connection(ns, rule: dict,
     return False
 
 
-# ========= CORE RULE PROCESSING =========
-
 def process_rule(ns, rule: dict) -> int:
     """
     Process one rule; return number of moved emails (excluding today).
 
-    Logic:
-      - Enumerate all items in source folder
-      - Keep only MailItems
-      - Filter by SenderEmailAddress (case-insensitive)
-      - Filter by ReceivedTime < today 00:00
-      - Force-load Subject/Body (so mail is fully loaded)
-      - Move to target folder, keep UnRead=True
-      - Save .msg in SaveRoot\YYYY\MM-Month based on "Month YYYY" in subject
+    - Iterates folder items by index from bottom to top (no huge snapshot).
+    - Filters in Python (no Restrict).
+    - Only keeps one COM item "open" at a time, reducing server complaints.
     """
     rule_name = rule["rule_name"]
     source_mailbox = rule["source_mailbox"]
@@ -342,7 +350,7 @@ def process_rule(ns, rule: dict) -> int:
     logging.info(f"  Target: {target_mailbox}\\{'\\'.join(target_folder_parts)}")
     logging.info(f"  Save base path: {save_root}")
 
-    # Cutoff = today at 00:00 (naive datetime)
+    # Build cutoff = today at 00:00 (naive datetime)
     now = datetime.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -356,20 +364,26 @@ def process_rule(ns, rule: dict) -> int:
         logging.error(f"  ✖ ERROR locating folders: {e}")
         return 0
 
-    # Snapshot items into a Python list (no live COM indexing)
     try:
         src_items = src_folder.Items
-        items_list = [item for item in src_items]
+        total_items = src_items.Count
     except Exception as e:
         logging.error(f"  ✖ ERROR reading items from source folder: {e}")
         return 0
 
-    logging.info(f"  → Source folder contains {len(items_list)} item(s) in total")
+    logging.info(f"  → Source folder contains {total_items} item(s) in total")
 
     moved_count = 0
     scanned_count = 0
 
-    for item in items_list:
+    # Iterate backwards so moving items doesn't break indexing
+    for i in range(total_items, 0, -1):
+        try:
+            item = src_items.Item(i)
+        except Exception as e:
+            logging.warning(f"   ✖ ERROR retrieving item at index {i}: {e}")
+            continue
+
         if item is None:
             continue
         if getattr(item, "Class", None) != OL_MAILITEM_CLASS:
@@ -398,15 +412,7 @@ def process_rule(ns, rule: dict) -> int:
             rec_dt = rec_dt.replace(tzinfo=None)
 
         if rec_dt >= today_start:
-            # mail from today or later → skip
-            continue
-
-        # Force-load the item by accessing Subject and Body (makes sure it's fully cached)
-        try:
-            _ = item.Subject
-            _ = item.Body
-        except Exception as e:
-            logging.warning(f"   ✖ ERROR loading item body/subject: {e}")
+            # It's from today or later, skip
             continue
 
         subject_display = sanitize_filename(getattr(item, "Subject", "") or "No subject")
@@ -416,6 +422,7 @@ def process_rule(ns, rule: dict) -> int:
             moved.UnRead = True
             moved.Save()
 
+            # Save based on period in subject, keeping path length under MAX_PATH_LEN
             save_mail_as_msg(moved, save_root)
 
             logging.info(f"   ✔ Moved & saved: {subject_display}")
@@ -423,6 +430,9 @@ def process_rule(ns, rule: dict) -> int:
 
         except Exception as e:
             logging.error(f"   ✖ ERROR moving/saving '{subject_display}': {e}")
+
+        # Explicitly drop reference to help COM release
+        item = None
 
     logging.info(
         f"  → Scanned {scanned_count} mail item(s) in source folder, "
