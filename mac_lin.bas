@@ -20,6 +20,8 @@ Option Explicit
 '       - Column "Tickler Type": unique values from Src_tbl[Tickler Type]
 '       - Column "Source Count": frequency of each Tickler Type
 '       - Column "% of Total"  : Source Count / total non-blank Tickler Type rows (as %)
+' 7) Adds a **Grand Total %** (SUM of "% of Total") in the sheet, just below the
+'    "tickler_count" table, so users can see if they have changed the individual % values.
 '
 ' LAYOUT & REQUIREMENTS (assumed)
 ' - MAIN workbook has sheet "QA_Parameters" with table "tickler_count"
@@ -27,6 +29,7 @@ Option Explicit
 '   NOTE: This macro DOES NOT resize "tickler_count" (to avoid pushing into a table below).
 '         Pre-allocate enough data rows. The macro writes from the first row down and
 '         clears remaining rows if there are fewer unique values than preallocated rows.
+'         The "Grand Total %" cell is placed OUTSIDE the table (one row below).
 '
 ' - Source file (you pick) has a header row.
 '   The macro *safely ignores* missing columns:
@@ -36,6 +39,7 @@ Option Explicit
 '
 ' COMMON ISSUES AVOIDED
 ' - Table-on-table collision: we never add ListRows to "tickler_count".
+' - "Grand Total %" is outside the table, so we do not resize it.
 ' - Source file stays unchanged (opened Read-Only, then closed without saving).
 '
 ' HOW TO RUN
@@ -70,6 +74,9 @@ Sub Build_SrcTbl_And_TicklerCounts()
     
     Dim valType As String, valStatus As String
     Dim omitRow As Boolean
+    
+    Dim grandTotalCell As Range
+    Dim grandTotalLabelCell As Range
     
     On Error GoTo ErrHandler
     Set wbMain = ThisWorkbook
@@ -313,6 +320,19 @@ CloseSourceAndExit:
         .NumberFormat = "0.00%"
     End With
     
+    '--------------------------------------------------------
+    ' Add GRAND TOTAL % just below the table (outside tickler_count)
+    '   - Label in column 2: "Grand Total %"
+    '   - Formula in column 3: =SUM(<% of Total column in DataBodyRange>)
+    '   This remains outside the ListObject so the table does not resize.
+    '--------------------------------------------------------
+    Set grandTotalCell = bodyCount.Cells(maxRows, 3).Offset(1, 0)       ' one row below last body row
+    Set grandTotalLabelCell = grandTotalCell.Offset(0, -1)              ' column just to the left
+    
+    grandTotalLabelCell.Value = "Grand Total %"
+    grandTotalCell.Formula = "=SUM(" & bodyCount.Columns(3).Address(True, True) & ")"
+    grandTotalCell.NumberFormat = "0.00%"
+    
     ' If fewer unique types than preallocated rows → rest already blank
     
     '--------------------------------------------------------
@@ -321,7 +341,8 @@ CloseSourceAndExit:
     MsgBox "Step 1 complete:" & vbCrLf & _
            "- Old 'Source file' (if any) removed and rebuilt." & vbCrLf & _
            "- Src_tbl created (AER / banned Tickler Types / Waived status excluded)." & vbCrLf & _
-           "- tickler_count filled on 'QA_Parameters' without resizing.", vbInformation
+           "- tickler_count filled on 'QA_Parameters' without resizing." & vbCrLf & _
+           "- Grand Total % added below tickler_count.", vbInformation
 
 CleanExit:
     Application.ScreenUpdating = True
