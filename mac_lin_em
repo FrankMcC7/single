@@ -1,6 +1,6 @@
 Option Explicit
 '====================================================================================
-'  MACRO NAME:   Send_QA_Emails_Grouped   (UPDATED – ROW-WISE VERSION)
+'  MACRO NAME:   Send_QA_Emails_Grouped   (UPDATED – ROW-WISE VERSION + DIAGNOSTICS)
 '====================================================================================
 '  PURPOSE
 '    • Before running, ensures QA_Sam[Reviewer] is filtered so that only ONE unique
@@ -13,63 +13,38 @@ Option Explicit
 '    • Subject and body template depend on value in "Pass/Fail" (Pass vs Fail).
 '    • Each email contains a small HTML table with just that single QA record.
 '
+'  TOGGLE DISPLAY vs SEND
+'    Const PREVIEW_MODE As Boolean = True  → .Display (preview only)
+'    Const PREVIEW_MODE As Boolean = False → .Send    (actually sends)
+'
 '  HARD STOP VALIDATIONS
-'    1) QA_Sam must have at least one visible row.
+'    1) QA_Sam must have at least one data row.
 '    2) QA_Sam[Reviewer] must have exactly ONE unique visible value.
-'    3) For the rows in the target period:
+'    3) Keys!Em_add must contain all Reviewer & CSA names (otherwise names are
+'       appended and macro stops for you to fill emails).
+'    4) For visible rows in scope:
 '         - "Pass/Fail" is MANDATORY.
-'         - If any visible row in scope has blank "Pass/Fail", macro stops and
-'           tells the user to populate it.
+'         - If any visible row has blank "Pass/Fail", macro stops and tells you.
 '
 '  INPUT
 '    Sheet: "QA Sample Set"    → Table: "QA_Sam" (ListObject)
 '      Required columns (case-insensitive):
-'        - "Completed Date"                → used to identify the month/period
-'        - "Pass/Fail"                     → "Pass" / "Fail" (mandatory)
-'        - "Reviewer"                      → used for CC and reviewer filter
-'        - "Offshore CSA (Completed by)"   → used for To:
+'        - "Completed Date"
+'        - "Pass/Fail"
+'        - "Reviewer"
+'        - "Offshore CSA (Completed by)"  (or "Offshore CSA")
 '
 '    Sheet: "Keys"            → Table: "Em_add"
 '      Required columns:
-'        - "Name"             → matches names in Reviewer / Offshore CSA (Completed by)
-'        - "Email address"    → email for each name
+'        - "Name"
+'        - "Email address"
 '
-'  BEHAVIOUR (UPDATED)
-'    1) Pre-run directory check:
-'         - Ensures every distinct Reviewer + CSA name in QA_Sam exists in Keys!Em_add.
-'         - Appends any missing names to Em_add (Name column only) and stops, asking you
-'           to fill the email addresses, then rerun.
+'  PERIOD LOGIC
+'    • Uses earliest Completed Date among visible rows with nonblank Pass/Fail.
+'    • That defines the period month (e.g., "September 2025") and the date window.
+'    • If it can’t find any valid date, asks you to type the period text manually;
+'      in that case, it does NOT date-filter; it just uses currently visible rows.
 '
-'    2) Reviewer filter check:
-'         - Looks at the visible rows in QA_Sam[Reviewer].
-'         - If the number of unique visible reviewer values <> 1, prompts:
-'             "Please filter QA_Sam[Reviewer] to a single reviewer (your name)
-'              and rerun."
-'           and exits.
-'
-'    3) Period selection:
-'         - Identifies period by earliest "Completed Date" among rows where Pass/Fail
-'           is not blank (Month YYYY).
-'         - If no valid date found, prompts you to enter period text manually.
-'         - If a concrete date was found, filters logic internally to that month
-'           (first to last day).
-'
-'    4) Mandatory Pass/Fail:
-'         - For visible rows within the period:
-'             • If ANY row has blank "Pass/Fail", macro stops and shows a message
-'               that Pass/Fail is mandatory.
-'
-'    5) Row-wise emails:
-'         - For each visible row in scope with non-blank Pass/Fail:
-'             • Builds a one-row HTML table (headers + this row).
-'             • Chooses Pass or Fail template.
-'             • Sends a dedicated email for that row.
-'
-'    6) Cleanup:
-'         - Deletes "Temp_QA_Email" sheet at the end.
-'
-'  CONFIG
-'    - Toggle PREVIEW_MODE to True to preview emails (.Display) instead of sending.
 '====================================================================================
 
 Sub Send_QA_Emails_Grouped()
@@ -79,6 +54,7 @@ Sub Send_QA_Emails_Grouped()
     Dim wb As Workbook
     Dim wsQA As Worksheet, wsKeys As Worksheet, wsTemp As Worksheet
     Dim loQA As ListObject, loKeys As ListObject
+    Dim loTmp As ListObject
     
     Dim colComp As Long, colCSA As Long, colRev As Long, colPF As Long
     Dim i As Long, haveDate As Boolean
@@ -88,38 +64,77 @@ Sub Send_QA_Emails_Grouped()
     Dim uniqueRevCount As Long
     Dim rngDB As Range
     
+    Dim blankPFCount As Long
+    Dim candidateRows As Collection
+    Dim rowIdx As Long
+    Dim pfStatus As String
+    Dim dtRow As Variant
+    
+    Dim olApp As Object, olMail As Object
+    Dim wsTempCreated As Boolean
+    
+    Dim k As Long
+    Dim thisRow As Long
+    Dim csaName As String, reviewerName As String
+    Dim toEmail As String, ccEmail As String
+    Dim subj As String, bodyHTML As String
+    Dim dataRange As Range, htmlTable As String
+    Dim pfLower As String
+    Dim sentCount As Long
+    
+    '--- Basic workbook/table setup ---
     Set wb = ThisWorkbook
+    
+    On Error Resume Next
     Set wsQA = wb.Worksheets("QA Sample Set")
+    On Error GoTo 0
+    If wsQA Is Nothing Then
+        MsgBox "Sheet 'QA Sample Set' not found. Cannot proceed.", vbCritical
+        Exit Sub
+    End If
+    
+    On Error Resume Next
     Set wsKeys = wb.Worksheets("Keys")
+    On Error GoTo 0
+    If wsKeys Is Nothing Then
+        MsgBox "Sheet 'Keys' not found. Cannot proceed.", vbCritical
+        Exit Sub
+    End If
     
     On Error Resume Next
     Set loQA = wsQA.ListObjects("QA_Sam")
-    Set loKeys = wsKeys.ListObjects("Em_add")
     On Error GoTo 0
-    
     If loQA Is Nothing Then
-        MsgBox "Table 'QA_Sam' not found on 'QA Sample Set'.", vbCritical
+        MsgBox "Table 'QA_Sam' not found on sheet 'QA Sample Set'.", vbCritical
         Exit Sub
     End If
+    
+    On Error Resume Next
+    Set loKeys = wsKeys.ListObjects("Em_add")
+    On Error GoTo 0
     If loKeys Is Nothing Then
-        MsgBox "Table 'Em_add' not found on 'Keys'.", vbCritical
+        MsgBox "Table 'Em_add' not found on sheet 'Keys'.", vbCritical
         Exit Sub
     End If
     
     If loQA.DataBodyRange Is Nothing Then
-        MsgBox "No data rows found in QA_Sam.", vbCritical
+        MsgBox "QA_Sam has no data rows. Nothing to send.", vbExclamation
         Exit Sub
     End If
     Set rngDB = loQA.DataBodyRange
     
-    ' Identify columns in QA_Sam
+    '--- Get required column indexes ---
     colComp = GetListColumnIndex(loQA, Array("Completed Date"))
     colCSA  = GetListColumnIndex(loQA, Array("Offshore CSA (Completed by)", "Offshore CSA"))
     colRev  = GetListColumnIndex(loQA, Array("Reviewer"))
     colPF   = GetListColumnIndex(loQA, Array("Pass/Fail"))
     
     If colComp * colCSA * colRev * colPF = 0 Then
-        MsgBox "Missing one of required columns in QA_Sam: Completed Date / Pass/Fail / Reviewer / Offshore CSA (Completed by).", vbCritical
+        MsgBox "One or more required columns not found in QA_Sam:" & vbCrLf & _
+               " - Completed Date" & vbCrLf & _
+               " - Pass/Fail" & vbCrLf & _
+               " - Reviewer" & vbCrLf & _
+               " - Offshore CSA (Completed by)", vbCritical
         Exit Sub
     End If
     
@@ -127,20 +142,29 @@ Sub Send_QA_Emails_Grouped()
     ' STEP 1: Reviewer filter check → must have EXACTLY ONE unique visible reviewer
     '--------------------------------------------------------------------------------
     uniqueRevCount = CountUniqueVisibleValues(loQA, colRev)
-    If uniqueRevCount <> 1 Then
-        MsgBox "Please filter the 'Reviewer' column in QA_Sam so that only ONE reviewer " & _
-               "is visible (your name), then rerun this macro.", vbExclamation
+    If uniqueRevCount = 0 Then
+        MsgBox "No visible rows found in QA_Sam. Check your filters.", vbExclamation
+        Exit Sub
+    ElseIf uniqueRevCount <> 1 Then
+        MsgBox "Reviewer filter check failed." & vbCrLf & _
+               "The 'Reviewer' column in QA_Sam must be filtered so that only ONE reviewer " & _
+               "is visible (your name) before running this macro.", vbExclamation
         Exit Sub
     End If
     
     '--------------------------------------------------------------------------------
-    ' STEP 2: Pre-run email mapping validation (keys table)
+    ' STEP 2: Validate email mappings (Keys!Em_add)
     '--------------------------------------------------------------------------------
-    If Not ValidateEmails_Map(loQA, loKeys, colRev, colCSA) Then Exit Sub
+    If Not ValidateEmails_Map(loQA, loKeys, colRev, colCSA) Then
+        ' ValidateEmails_Map already showed a message and appended any missing names.
+        Exit Sub
+    End If
     
     '--------------------------------------------------------------------------------
     ' STEP 3: Determine period from Completed Date (earliest month with nonblank Pass/Fail)
+    '         Only considers VISIBLE rows.
     '--------------------------------------------------------------------------------
+    haveDate = False
     For i = 1 To loQA.ListRows.Count
         If Not rngDB.Rows(i).EntireRow.Hidden Then
             If Trim$(rngDB.Cells(i, colPF).Value) <> "" Then
@@ -162,32 +186,31 @@ Sub Send_QA_Emails_Grouped()
         startDate = DateSerial(Year(minDate), Month(minDate), 1)
         endDate   = DateSerial(Year(minDate), Month(minDate) + 1, 0)
     Else
-        periodText = InputBox("Enter QA period text (e.g. September 2025):", "QA Period")
-        If Trim$(periodText) = "" Then Exit Sub
+        periodText = InputBox("Could not detect the QA period from 'Completed Date'." & vbCrLf & _
+                              "Please type the period text (e.g. ""September 2025"":", _
+                              "QA Period")
+        If Trim$(periodText) = "" Then
+            MsgBox "No period entered. Macro cancelled.", vbExclamation
+            Exit Sub
+        End If
+        ' When user types free text, we do not date-filter. We just use visible rows.
         startDate = 0
         endDate = 0
     End If
     
     '--------------------------------------------------------------------------------
-    ' STEP 4: Check Pass/Fail is populated for all visible rows in scope
-    '         (visible rows; and within period if period is date-based)
+    ' STEP 4: Build candidate row list and enforce mandatory Pass/Fail
     '--------------------------------------------------------------------------------
-    Dim blankPFCount As Long
-    Dim candidateRows As Collection
-    Dim rowIdx As Long
-    Dim pfStatus As String
-    Dim dtRow As Variant
-    
     Set candidateRows = New Collection
     blankPFCount = 0
     
     For i = 1 To loQA.ListRows.Count
-        ' Only consider visible rows (respect current filter – especially Reviewer)
+        ' Respect current filters (especially Reviewer filter)
         If Not rngDB.Rows(i).EntireRow.Hidden Then
             
             dtRow = rngDB.Cells(i, colComp).Value
             
-            ' If we have a concrete month, restrict to that month; otherwise include all
+            ' If we have a concrete month, restrict to that month; otherwise include all visible rows
             If startDate <> 0 Then
                 If IsDate(dtRow) Then
                     dt = CDate(dtRow)
@@ -195,7 +218,7 @@ Sub Send_QA_Emails_Grouped()
                         GoTo NextVisibleRow
                     End If
                 Else
-                    ' No valid date → ignore this row for this run
+                    ' No valid date → ignore this row in this run
                     GoTo NextVisibleRow
                 End If
             End If
@@ -212,29 +235,29 @@ NextVisibleRow:
     Next i
     
     If blankPFCount > 0 Then
-        MsgBox "Column 'Pass/Fail' is mandatory for all visible rows in the current scope." & vbCrLf & _
-               "Please populate 'Pass/Fail' (Pass / Fail) for every visible record and rerun.", _
+        MsgBox "Column 'Pass/Fail' is MANDATORY for all visible rows in the current scope." & vbCrLf & _
+               "There are " & blankPFCount & " visible row(s) with blank 'Pass/Fail'." & vbCrLf & _
+               "Please populate 'Pass' or 'Fail' for those rows and rerun the macro.", _
                vbCritical
         Exit Sub
     End If
     
     If candidateRows.Count = 0 Then
-        MsgBox "No QA records with populated 'Pass/Fail' found for " & periodText & _
-               " for the currently visible rows.", vbInformation
+        MsgBox "No QA records with populated 'Pass/Fail' found for period " & periodText & _
+               " within the currently visible rows.", vbInformation
         Exit Sub
     End If
     
     '--------------------------------------------------------------------------------
     ' STEP 5: Prepare / clear temp sheet for building one-row tables
     '--------------------------------------------------------------------------------
-    Dim loTmp As ListObject
-    
     On Error Resume Next
     Set wsTemp = wb.Worksheets("Temp_QA_Email")
     On Error GoTo 0
     If wsTemp Is Nothing Then
         Set wsTemp = wb.Worksheets.Add(After:=wsQA)
         wsTemp.Name = "Temp_QA_Email"
+        wsTempCreated = True
     Else
         wsTemp.Cells.Clear
         On Error Resume Next
@@ -242,37 +265,27 @@ NextVisibleRow:
             loTmp.Delete
         Next loTmp
         On Error GoTo 0
+        wsTempCreated = True
     End If
     
     '--------------------------------------------------------------------------------
     ' STEP 6: Set up Outlook
     '--------------------------------------------------------------------------------
-    Dim olApp As Object, olMail As Object
     On Error Resume Next
     Set olApp = GetObject(Class:="Outlook.Application")
     If olApp Is Nothing Then Set olApp = CreateObject("Outlook.Application")
     On Error GoTo 0
     If olApp Is Nothing Then
-        MsgBox "Outlook is not available.", vbCritical
+        MsgBox "Outlook is not available. Cannot create or send emails.", vbCritical
         GoTo TidyUp
     End If
     
     Application.ScreenUpdating = False
+    sentCount = 0
     
     '--------------------------------------------------------------------------------
     ' STEP 7: Loop through candidate rows and send one email per row
     '--------------------------------------------------------------------------------
-    Dim k As Long
-    Dim thisRow As Long
-    Dim csaName As String, reviewerName As String
-    Dim toEmail As String, ccEmail As String
-    Dim subj As String, bodyHTML As String
-    Dim dataRange As Range, htmlTable As String
-    Dim pfLower As String
-    Dim sentCount As Long
-    
-    sentCount = 0
-    
     For k = 1 To candidateRows.Count
         thisRow = candidateRows(k)
         
@@ -281,16 +294,18 @@ NextVisibleRow:
         pfStatus = Trim$(CStr(rngDB.Cells(thisRow, colPF).Value))
         pfLower = LCase$(pfStatus)
         
-        ' Resolve emails
+        ' Resolve emails (To and CC)
         toEmail = GetEmailFromName(loKeys, csaName)
         ccEmail = GetEmailFromName(loKeys, reviewerName)
         
         If Len(toEmail) = 0 Then
-            ' If CSA email missing (should not happen due to ValidateEmails_Map), skip row
+            ' Should not happen if ValidateEmails_Map was satisfied
+            MsgBox "No email address found for CSA name '" & csaName & "'. Skipping that row.", _
+                   vbExclamation
             GoTo NextRowToSend
         End If
         
-        ' Build one-row table in Temp sheet
+        ' Build one-row HTML table in Temp sheet
         wsTemp.Cells.Clear
         loQA.HeaderRowRange.Copy wsTemp.Range("A1")
         rngDB.Rows(thisRow).Copy wsTemp.Range("A2")
@@ -320,7 +335,9 @@ NextVisibleRow:
                        "Once remediation is completed, please notify the reviewer so it can be confirmed and closed.</b></p>" & _
                        "<p>Regards,<br>" & EncodeHtml(reviewerName) & "</p>"
         Else
-            ' Should not occur due to earlier mandatory Pass/Fail check
+            ' Should not happen due to earlier mandatory Pass/Fail check
+            MsgBox "Unexpected Pass/Fail value '" & pfStatus & "' on row " & thisRow & _
+                   ". Skipping this row.", vbExclamation
             GoTo NextRowToSend
         End If
         
@@ -342,18 +359,20 @@ NextRowToSend:
     Next k
     
 TidyUp:
+    ' Clean up temp sheet (do not error if user deleted it manually)
     On Error Resume Next
-    Application.DisplayAlerts = False
-    wsTemp.Delete
-    Application.DisplayAlerts = True
+    If wsTempCreated Then
+        Application.DisplayAlerts = False
+        wsTemp.Delete
+        Application.DisplayAlerts = True
+    End If
     On Error GoTo 0
     
     Application.ScreenUpdating = True
     
-    If sentCount > 0 Then
-        MsgBox "Row-wise QA emails processed for " & periodText & "." & vbCrLf & _
-               "Total emails sent: " & sentCount, vbInformation
-    End If
+    MsgBox "Macro completed for period: " & periodText & vbCrLf & _
+           "Total candidate rows with Pass/Fail: " & candidateRows.Count & vbCrLf & _
+           "Total emails processed (displayed/sent): " & sentCount, vbInformation
 End Sub
 
 '===============================
@@ -386,18 +405,6 @@ Private Function CountUniqueVisibleValues(lo As ListObject, colIndex As Long) As
     CountUniqueVisibleValues = dict.Count
 End Function
 
-' Safely clear AutoFilter (kept for reuse if needed elsewhere)
-Private Sub SafeShowAllData(lo As ListObject)
-    On Error Resume Next
-    If lo.AutoFilter Is Nothing Then
-        lo.Range.AutoFilter
-        lo.AutoFilter.ShowAllData
-    Else
-        lo.AutoFilter.ShowAllData
-    End If
-    On Error GoTo 0
-End Sub
-
 ' Get email by exact Name match from Em_add
 Private Function GetEmailFromName(lo As ListObject, personName As String) As String
     Dim r As Range
@@ -416,20 +423,12 @@ Private Function ValidateEmails_Map(loQA As ListObject, loKeys As ListObject, _
     Set dictAll = CreateObject("Scripting.Dictionary")
     Set dictExisting = CreateObject("Scripting.Dictionary")
     
-    ' Collect names from QA (all rows, not just visible – keeps Keys complete)
+    ' Collect all names from QA (Reviewer + CSA, all rows)
     For i = 1 To loQA.ListRows.Count
-        If Not loQA.DataBodyRange.Rows(i).EntireRow.Hidden Then
-            nm = Trim$(loQA.DataBodyRange.Cells(i, colRev).Value)
-            If nm <> "" Then dictAll(nm) = 1
-            nm = Trim$(loQA.DataBodyRange.Cells(i, colCSA).Value)
-            If nm <> "" Then dictAll(nm) = 1
-        Else
-            ' Even if hidden, you may want emails in Keys; include them too:
-            nm = Trim$(loQA.DataBodyRange.Cells(i, colRev).Value)
-            If nm <> "" Then dictAll(nm) = 1
-            nm = Trim$(loQA.DataBodyRange.Cells(i, colCSA).Value)
-            If nm <> "" Then dictAll(nm) = 1
-        End If
+        nm = Trim$(loQA.DataBodyRange.Cells(i, colRev).Value)
+        If nm <> "" Then dictAll(nm) = 1
+        nm = Trim$(loQA.DataBodyRange.Cells(i, colCSA).Value)
+        If nm <> "" Then dictAll(nm) = 1
     Next i
     
     ' Existing names in Em_add
@@ -450,7 +449,9 @@ Private Function ValidateEmails_Map(loQA As ListObject, loKeys As ListObject, _
             loKeys.DataBodyRange.Cells(lr + 1, 1).Value = k
             lr = lr + 1
         Next k
-        MsgBox "New names appended to Keys!Em_add. Please fill their email addresses and rerun.", vbExclamation
+        MsgBox "New names were appended to Keys!Em_add (Name column only)." & vbCrLf & _
+               "Please fill their email addresses in 'Email address' column and rerun.", _
+               vbExclamation
         ValidateEmails_Map = False
         Exit Function
     End If
