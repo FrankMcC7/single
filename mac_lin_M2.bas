@@ -1,21 +1,22 @@
 Option Explicit
 
 '=========================================================================================
-' README — Macro 2: Build_QA_Sample_Set (UPDATED LAYOUT)
+' README — Macro 2: Build_QA_Sample_Set (UPDATED LAYOUT & FILTER RESET)
 '
 ' PURPOSE
 '   Build a randomized QA sample set from Src_tbl into QA_Sam.
 '
 ' WHAT IT DOES
-'   1) Clears only the contents of QA_Sam (keeps table structure/validations).
-'   2) In QA_Parameters!tickler_count, sets [Sample Set Count] = ROUNDUP([% of Total] * F3, 0).
-'   3) Reads column mappings from Keys!col_key (or Keys!col_keys):
+'   1) Ensures QA_Sam table is fully UNFILTERED (clears any filters from previous macros).
+'   2) Clears only the contents of QA_Sam (keeps table structure/validations).
+'   3) In QA_Parameters!tickler_count, sets [Sample Set Count] = ROUNDUP([% of Total] * F3, 0).
+'   4) Reads column mappings from Keys!col_key (or Keys!col_keys):
 '        - QA_Sam_col  → column header in QA_Sam
 '        - Src_tbl_col → corresponding source column header in Src_tbl
-'   4) For each Tickler Type with Sample Set Count > 0:
+'   5) For each Tickler Type with Sample Set Count > 0:
 '        - Randomly select N rows from Src_tbl where N = Sample Set Count.
 '        - Append those rows to QA_Sam (ListRows.Add) using the mapping.
-'   5) Deletes any fully blank rows within QA_Sam so the table starts clean from the top.
+'   6) Deletes any fully blank rows within QA_Sam so the table starts clean from the top.
 '
 ' UPDATED LAYOUT (per your new guidance)
 '   - Sample Set Size:      'QA_Parameters'!F3
@@ -34,7 +35,8 @@ Option Explicit
 ' NOTES
 '   - This macro appends to QA_Sam then removes fully blank rows, so re-runs don’t leave
 '     leading empty rows.
-'   - If you want to preserve first N blank “template” rows in QA_Sam, say so and we’ll tweak.
+'   - At the very start it forcibly clears any filters on QA_Sam so that previous runs
+'     of the email macro (which filter QA_Sam) do not interfere with sampling.
 '
 ' HOW TO RUN
 '   - Put this code in a standard module of the MAIN workbook.
@@ -98,6 +100,12 @@ Sub Build_QA_Sample_Set()
         GoTo CleanExit
     End If
 
+    '--------------------------------------------------------
+    ' FIRST: ensure QA_Sam is completely UNFILTERED
+    ' (macro 4/email macro may have left filters on QA_Sam)
+    '--------------------------------------------------------
+    SafeShowAllData_Table tblQA
+
     ' Performance
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -141,6 +149,7 @@ Sub Build_QA_Sample_Set()
     End If
     Set bodyRangeCount = tblCount.DataBodyRange
 
+    ' Calculate Sample Set Count = ROUNDUP(% of Total * F3)
     For r = 1 To bodyRangeCount.Rows.Count
         pct = 0
         If IsNumeric(bodyRangeCount.Cells(r, colPct).Value) Then
@@ -148,7 +157,8 @@ Sub Build_QA_Sample_Set()
         End If
 
         If pct > 0 Then
-            bodyRangeCount.Cells(r, colSample).Value = Application.WorksheetFunction.RoundUp(pct * sampleSize, 0)
+            bodyRangeCount.Cells(r, colSample).Value = _
+                Application.WorksheetFunction.RoundUp(pct * sampleSize, 0)
         Else
             bodyRangeCount.Cells(r, colSample).Value = 0
         End If
@@ -189,11 +199,15 @@ Sub Build_QA_Sample_Set()
         srcHeader = Trim$(CStr(mapBody.Cells(r, mapSrcColIdx).Value))
         If qaHeader <> "" And srcHeader <> "" Then
             k = k + 1
+
+            ' Get QA_Sam column index
             QAColIndex(k) = GetTableColumnIndex(tblQA, qaHeader)
             If QAColIndex(k) = 0 Then
                 MsgBox "QA_Sam column '" & qaHeader & "' not found.", vbCritical
                 GoTo CleanExit
             End If
+
+            ' Get Src_tbl column index
             SrcColIndex(k) = GetTableColumnIndex(tblSrc, srcHeader)
             If SrcColIndex(k) = 0 Then
                 MsgBox "Src_tbl column '" & srcHeader & "' not found.", vbCritical
@@ -222,7 +236,7 @@ Sub Build_QA_Sample_Set()
         End If
 
         If tt <> "" And needed > 0 Then
-            ' Collect matches
+            ' Collect matches from Src_tbl for this Tickler Type
             matchCount = 0
             Erase matchRows
 
@@ -304,3 +318,20 @@ Private Function GetTableColumnIndex(ByVal tbl As ListObject, ByVal headerName A
     Next i
     GetTableColumnIndex = 0
 End Function
+
+'============================================================
+' Helper: Safely clear any AutoFilter on a ListObject
+'   Ensures the table is fully unfiltered without throwing
+'   errors if no filter is currently applied.
+'============================================================
+Private Sub SafeShowAllData_Table(ByVal lo As ListObject)
+    On Error Resume Next
+    ' If AutoFilter is Nothing, toggle one on and then clear it
+    If lo.AutoFilter Is Nothing Then
+        lo.Range.AutoFilter
+        lo.AutoFilter.ShowAllData
+    Else
+        lo.AutoFilter.ShowAllData
+    End If
+    On Error GoTo 0
+End Sub
