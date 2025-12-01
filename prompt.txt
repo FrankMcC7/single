@@ -1,3 +1,117 @@
+
+Here’s a reusable prompt you can copy-paste and tweak as needed:
+
+
+---
+
+You are an expert analyst. I will attach one or more documents.
+Your job is to summarize only what is in the attached documents.
+
+Task
+
+1. Provide a succinct, structured summary of the attached document(s).
+
+
+2. Use clear headings and bullet points.
+
+
+3. Where it improves clarity, use small, clean tables (for metrics, timelines, or comparisons).
+
+
+
+Output format
+
+A. Executive Summary (5–8 bullets max)
+
+High-level purpose of the document(s)
+
+Key themes and messages
+
+Any critical numbers, dates, or names
+
+Any major risks/issues (if applicable)
+
+
+B. Key Details / Breakdown
+Use subsections as needed, for example:
+
+Scope & Objective
+
+…
+
+
+Methodology / Approach
+
+…
+
+
+Key Findings / Insights
+
+…
+
+
+Risks / Issues / Constraints
+
+…
+
+
+Recommendations / Next Steps
+
+…
+
+
+
+C. Tables (only if helpful)
+If the document has structured data (financials, KPIs, timelines, risk registers, etc.), present them in compact tables.
+Example structures (adapt to fit the content):
+
+Metrics Table (example)
+
+
+Metric	Value	Period / Context
+
+		
+
+
+Risk Summary (example)
+
+
+Risk / Issue	Description	Impact	Mitigant / Control
+
+			
+
+
+Strict rules (very important)
+
+Source constraint: Use only the information explicitly present or directly implied in the attached document(s).
+
+No external knowledge, no guessing, no generic commentary.
+
+If something is not stated or not clear in the documents, explicitly say:
+
+“Not specified in the attached documents.”
+
+
+Keep the language concise, neutral, and professional.
+
+Do not repeat long passages verbatim; summarize.
+
+
+Now, wait for the attached document(s) and then produce the summary using this exact structure.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 **Role:** You are a Senior Quantitative Data Analyst. Your goal is to extract financial data with 100% precision.
 
 **Task:**
