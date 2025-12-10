@@ -1,59 +1,72 @@
 Private Sub Worksheet_Change(ByVal Target As Range)
-    On Error GoTo CleanExit
+    On Error GoTo ExitHandler
 
-    Dim dv As Validation
-    Dim src As String
+    '===== CONFIG: ALL DROPDOWN RANGES WITH MULTI-SELECT =====
+    Dim rngDV As Range
+    Set rngDV = Union( _
+        Me.Range("N3:N500"), _  ' 1st dropdown column
+        Me.Range("O3:O500"), _  ' 2nd dropdown column
+        Me.Range("P3:P500"), _  ' 3rd dropdown column
+        Me.Range("Q3:Q500"))    ' 4th dropdown column
+    '=========================================================
+
+    'Only act if the changed cell is inside ANY of the DV ranges
+    If Intersect(Target, rngDV) Is Nothing Then Exit Sub
+
+    'Ignore multi-cell edits (copy-paste etc.)
+    If Target.CountLarge > 1 Then Exit Sub
+
+    'Make sure the cell actually has a list validation
+    Dim v As Validation
+    On Error Resume Next
+    Set v = Target.Validation
+    On Error GoTo ExitHandler
+
+    If v Is Nothing Then Exit Sub
+    If v.Type <> xlValidateList Then Exit Sub
+
     Dim newVal As String
     Dim oldVal As String
 
-    ' Only handle single-cell changes
-    If Target.CountLarge > 1 Then Exit Sub
-
-    ' Try to get validation object for the changed cell
-    On Error Resume Next
-    Set dv = Target.Validation
-    On Error GoTo CleanExit
-
-    ' If there is no validation, or it's not a list, ignore
-    If dv Is Nothing Then Exit Sub
-    If dv.Type <> xlValidateList Then Exit Sub
-
-    ' Check that the validation source is Keys!$M$3:$M$21
-    src = dv.Formula1          ' e.g. "=Keys!$M$3:$M$21" or "='Keys'!$M$3:$M$21"
-    src = Replace(src, "=", "")
-    src = Replace(src, "'", "")
-
-    If StrComp(src, "Keys!$M$3:$M$21", vbTextCompare) <> 0 Then
-        ' Different DV list – do nothing
-        Exit Sub
-    End If
-
-    ' New value user just selected
     newVal = Target.Value
 
-    ' Allow user to clear the cell normally
+    'If user cleared the cell, don't do anything special
     If Len(newVal) = 0 Then Exit Sub
 
-    ' From here on, we are going to rewrite the cell, so disable events
     Application.EnableEvents = False
 
-    ' Use Undo to retrieve the old value of the cell
+    'Use Undo to get the old content of the cell
     Application.Undo
     oldVal = Target.Value
 
-    ' If the cell was empty before, just put the new value
+    'If previously empty, just set the new value
     If Len(oldVal) = 0 Then
         Target.Value = newVal
     Else
-        ' Prevent duplicates: if newVal already exists, keep old list
-        If InStr(1, oldVal, newVal, vbTextCompare) > 0 Then
+        'Check if the new value already exists in the list (avoid duplicates)
+        Dim arr As Variant
+        Dim i As Long
+        Dim exists As Boolean
+
+        arr = Split(oldVal, ",")
+
+        For i = LBound(arr) To UBound(arr)
+            If Trim$(arr(i)) = newVal Then
+                exists = True
+                Exit For
+            End If
+        Next i
+
+        If exists Then
+            'Keep old list as-is
             Target.Value = oldVal
         Else
-            Target.Value = oldVal & ", " & newVal   ' change separator if you want
+            'Append with comma + space separator
+            Target.Value = oldVal & ", " & newVal
         End If
     End If
 
-CleanExit:
+ExitHandler:
     On Error Resume Next
     Application.EnableEvents = True
 End Sub
