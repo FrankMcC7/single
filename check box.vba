@@ -68,6 +68,12 @@ Private Sub Worksheet_Change(ByVal Target As Range)
         End If
     End If
 
+    '==== SUPPRESS GREEN ERROR TRIANGLE FOR THIS CELL ====
+    On Error Resume Next
+    Target.Errors(xlListDataValidation).Ignore = True
+    On Error GoTo ExitHandler
+    '=====================================================
+
 ExitHandler:
     On Error Resume Next
     Application.EnableEvents = True
