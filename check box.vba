@@ -1,13 +1,22 @@
 Private Sub Worksheet_Change(ByVal Target As Range)
     On Error GoTo ExitHandler
 
-    '===== CONFIG: ALL DROPDOWN RANGES WITH MULTI-SELECT =====
     Dim rngDV As Range
+    Dim v As Validation
+    Dim newVal As String
+    Dim oldVal As String
+    Dim arr As Variant
+    Dim i As Long
+    Dim exists As Boolean
+
+    '===== CONFIG: ALL DROPDOWN RANGES WITH MULTI-SELECT =====
+    ' Adjust these ranges to match your dropdown cells
     Set rngDV = Union( _
-        Me.Range("N3:N500"), _  ' 1st dropdown column
-        Me.Range("O3:O500"), _  ' 2nd dropdown column
-        Me.Range("P3:P500"), _  ' 3rd dropdown column
-        Me.Range("Q3:Q500"))    ' 4th dropdown column
+        Me.Range("N3:N500"), _
+        Me.Range("O3:O500"), _
+        Me.Range("P3:P500"), _
+        Me.Range("Q3:Q500") _
+    )
     '=========================================================
 
     'Only act if the changed cell is inside ANY of the DV ranges
@@ -17,16 +26,12 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     If Target.CountLarge > 1 Then Exit Sub
 
     'Make sure the cell actually has a list validation
-    Dim v As Validation
     On Error Resume Next
     Set v = Target.Validation
     On Error GoTo ExitHandler
 
     If v Is Nothing Then Exit Sub
     If v.Type <> xlValidateList Then Exit Sub
-
-    Dim newVal As String
-    Dim oldVal As String
 
     newVal = Target.Value
 
@@ -44,12 +49,9 @@ Private Sub Worksheet_Change(ByVal Target As Range)
         Target.Value = newVal
     Else
         'Check if the new value already exists in the list (avoid duplicates)
-        Dim arr As Variant
-        Dim i As Long
-        Dim exists As Boolean
-
         arr = Split(oldVal, ",")
 
+        exists = False
         For i = LBound(arr) To UBound(arr)
             If Trim$(arr(i)) = newVal Then
                 exists = True
