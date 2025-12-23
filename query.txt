@@ -1,0 +1,37 @@
+SELECT LISTAGG(stmt, CHR(10) || 'UNION ALL' || CHR(10))
+       WITHIN GROUP (ORDER BY column_id) AS sql_to_run
+FROM (
+  SELECT
+    c.column_id,
+    'SELECT ''' || c.column_name || ''' AS column_name, ' ||
+    CASE
+      WHEN c.data_type = 'DATE' THEN
+        '(SELECT TO_CHAR("'||c.column_name||'","YYYY-MM-DD HH24:MI:SS")
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+      WHEN c.data_type LIKE 'TIMESTAMP%' THEN
+        '(SELECT TO_CHAR("'||c.column_name||'","YYYY-MM-DD HH24:MI:SS.FF")
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+      WHEN c.data_type = 'CLOB' THEN
+        '(SELECT DBMS_LOB.SUBSTR("'||c.column_name||'", 4000, 1)
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+      WHEN c.data_type = 'BLOB' THEN
+        '(SELECT ''<BLOB '' || DBMS_LOB.GETLENGTH("'||c.column_name||'") || '' bytes>''
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+      WHEN c.data_type = 'RAW' THEN
+        '(SELECT RAWTOHEX("'||c.column_name||'")
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+      ELSE
+        '(SELECT SUBSTR(TO_CHAR("'||c.column_name||'"), 1, 4000)
+           FROM OWNER_GMC.RFAD_TUSER
+          WHERE "'||c.column_name||'" IS NOT NULL AND ROWNUM = 1)'
+    END
+    || ' AS sample_value FROM dual' AS stmt
+  FROM all_tab_columns c
+  WHERE c.owner = 'OWNER_GMC'
+    AND c.table_name = 'RFAD_TUSER'
+);
