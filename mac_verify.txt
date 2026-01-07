@@ -1,0 +1,13 @@
+Private Sub Workbook_Open()
+    On Error Resume Next
+
+    'Quick sanity checks users can read
+    If LCase$(Right$(ThisWorkbook.Name, 5)) <> ".xlsm" And LCase$(Right$(ThisWorkbook.Name, 5)) <> ".xlsb" Then
+        MsgBox "This file is not a macro-enabled workbook (.xlsm/.xlsb). " & _
+               "Please open the correct master file.", vbCritical, "Macro workbook required"
+        Exit Sub
+    End If
+
+    'Optional: show version cell location (you maintain this)
+    'MsgBox "Loaded version: " & Sheets("Home").Range("B2").Value
+End Sub
