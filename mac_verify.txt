@@ -11,3 +11,10 @@ Private Sub Workbook_Open()
     'Optional: show version cell location (you maintain this)
     'MsgBox "Loaded version: " & Sheets("Home").Range("B2").Value
 End Sub
+
+
+Always open this file from the official shared folder — never from email or a copied version.
+
+When Excel asks, click “Enable Content” — macros must be ON for buttons to work.
+
+Do not rename or resave this file — use it exactly as provided (.xlsm only).
